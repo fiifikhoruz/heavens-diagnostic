@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  /* Medical theme - dark green and white */
+  --color-primary: #166534; /* Dark green */
+  --color-primary-light: #15803d;
+  --color-primary-dark: #14532d;
+  --color-accent: #10b981; /* Emerald */
+  --color-accent-light: #6ee7b7;
+  --color-accent-dark: #059669;
+  --color-background: #ffffff;
+  --color-background-secondary: #f9fafb;
+  --color-foreground: #1f2937;
+  --color-foreground-light: #6b7280;
+  --color-border: #e5e7eb;
+  --color-border-light: #f3f4f6;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #3b82f6;
+}
+
+@theme inline {
+  --color-primary: var(--color-primary);
+  --color-accent: var(--color-accent);
+  --font-sans: var(--font-inter);
+}
+
+body {
+  background: var(--color-background-secondary);
+  color: var(--color-foreground);
+  font-family: var(--font-inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+}
+
+/* Custom scrollbar for medical theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-background-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-primary-light);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary);
+}
+
+/* Medical badge animations */
+@keyframes pulse-soft {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
