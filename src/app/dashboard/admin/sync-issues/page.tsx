@@ -296,7 +296,7 @@ export default function SyncIssuesPage() {
                           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${ACTION_COLORS[item.action]}`}>
                             {ACTION_LABELS[item.action]}
                           </span>
-                          {item.payload.first_name && (
+                          {(item.payload.first_name as string | undefined) && (
                             <span className="text-sm text-gray-700 font-medium">
                               {item.payload.first_name as string} {item.payload.last_name as string}
                             </span>

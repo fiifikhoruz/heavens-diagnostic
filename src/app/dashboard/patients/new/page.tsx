@@ -124,6 +124,7 @@ export default function NewPatientPage() {
           emergencyContactName: formData.emergencyContactName || null,
           emergencyContactPhone: formData.emergencyContactPhone || null,
           createdAt: now,
+          updatedAt: now,
           synced: false,
         });
         await enqueueAction('CREATE_PATIENT', payload);
@@ -152,7 +153,7 @@ export default function NewPatientPage() {
             state: formData.state || null, postalCode: formData.postalCode || null,
             emergencyContactName: formData.emergencyContactName || null,
             emergencyContactPhone: formData.emergencyContactPhone || null,
-            createdAt: now, synced: false,
+            createdAt: now, updatedAt: now, synced: false,
           });
           await enqueueAction('CREATE_PATIENT', payload);
           setSavedOffline(true);
