@@ -166,7 +166,19 @@ export default function DashboardLayout({
   const supabase = createClient();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = window.innerWidth < 1024;
+      setIsMobile(mobile);
+      if (!mobile) setIsSidebarOpen(true); // always open on desktop
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
   const lastActivityRef = useRef<number>(Date.now());
   const inactivityTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -283,95 +295,151 @@ export default function DashboardLayout({
     item.roles.includes(profile.role as UserRole)
   );
 
+  const closeSidebar = () => { if (isMobile) setIsSidebarOpen(false); };
+
   return (
     <>
       <OfflineBanner />
-      <div className="flex h-screen bg-gray-50">
-      {/* Sidebar */}
-      <aside
-        className={`${
-          isSidebarOpen ? 'w-64' : 'w-20'
-        } bg-white border-r border-gray-200 transition-all duration-300 flex flex-col`}
-      >
-        {/* Logo */}
-        <div className="p-6 border-b border-gray-200">
-          <div className="flex items-center justify-center">
-            <div className="w-10 h-10 bg-green-600 rounded-full flex items-center justify-center text-white font-bold">
-              HD
+      <div className="flex h-screen bg-gray-50 overflow-hidden">
+
+        {/* Mobile backdrop */}
+        {isMobile && isSidebarOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
+
+        {/* Sidebar */}
+        <aside
+          className={`
+            ${isMobile
+              ? `fixed inset-y-0 left-0 z-50 w-72 transform transition-transform duration-300
+                 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
+              : `relative z-auto transition-all duration-300 ${isSidebarOpen ? 'w-64' : 'w-20'}`
+            }
+            bg-white border-r border-gray-200 flex flex-col shadow-lg lg:shadow-none
+          `}
+        >
+          {/* Logo */}
+          <div className="p-5 border-b border-gray-200">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 shrink-0 bg-green-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                HD
+              </div>
+              {(isSidebarOpen) && (
+                <div className="min-w-0">
+                  <p className="font-bold text-gray-900 truncate">Heavens</p>
+                  <p className="text-xs text-gray-500 truncate">Diagnostic Services</p>
+                </div>
+              )}
+              {/* Close button on mobile */}
+              {isMobile && (
+                <button
+                  onClick={() => setIsSidebarOpen(false)}
+                  className="ml-auto p-1 text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
             </div>
-            {isSidebarOpen && <span className="ml-3 font-bold text-gray-900">Heavens</span>}
           </div>
-        </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 px-3 py-6 space-y-2">
-          {visibleNavItems.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex items-center gap-3 px-3 py-2 text-gray-700 rounded-lg hover:bg-green-50 hover:text-green-700 transition"
-              title={isSidebarOpen ? '' : item.name}
+          {/* Navigation */}
+          <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+            {visibleNavItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={closeSidebar}
+                className="flex items-center gap-3 px-3 py-3 text-gray-700 rounded-lg hover:bg-green-50 hover:text-green-700 transition active:bg-green-100"
+                title={!isSidebarOpen && !isMobile ? item.name : ''}
+              >
+                <span className="shrink-0">{item.icon}</span>
+                {(isSidebarOpen || isMobile) && (
+                  <span className="font-medium text-sm">{item.name}</span>
+                )}
+              </Link>
+            ))}
+          </nav>
+
+          {/* User Profile & Logout */}
+          <div className="border-t border-gray-200 p-3 space-y-2">
+            {(isSidebarOpen || isMobile) && (
+              <div className="bg-gray-50 rounded-lg p-3">
+                <p className="text-sm font-semibold text-gray-900 truncate">{profile.fullName || 'User'}</p>
+                <span className={`inline-block text-xs px-2 py-0.5 rounded mt-1 font-medium ${getRoleColor(profile.role as UserRole)}`}>
+                  {getRoleLabel(profile.role as UserRole)}
+                </span>
+              </div>
+            )}
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-gray-700 hover:bg-red-50 hover:text-red-700 rounded-lg transition"
+              title={!isSidebarOpen && !isMobile ? 'Logout' : ''}
             >
-              {item.icon}
-              {isSidebarOpen && <span className="font-medium">{item.name}</span>}
-            </Link>
-          ))}
-        </nav>
+              <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              {(isSidebarOpen || isMobile) && <span className="font-medium text-sm">Logout</span>}
+            </button>
+          </div>
 
-        {/* User Profile & Logout */}
-        <div className="border-t border-gray-200 p-3 space-y-3">
-          {isSidebarOpen && (
-            <div className="bg-gray-50 rounded-lg p-3">
-              <p className="text-sm font-medium text-gray-900 truncate">{profile.fullName || 'User'}</p>
-              <span className={`inline-block text-xs px-2 py-1 rounded mt-1 font-medium ${getRoleColor(profile.role as UserRole)}`}>
-                {getRoleLabel(profile.role as UserRole)}
-              </span>
+          {/* Collapse toggle — desktop only */}
+          {!isMobile && (
+            <div className="p-3 border-t border-gray-200">
+              <button
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                className="w-full flex items-center justify-center p-2 text-gray-400 hover:text-green-600 transition rounded-lg hover:bg-green-50"
+              >
+                <svg
+                  className={`w-4 h-4 transition-transform duration-300 ${isSidebarOpen ? '' : 'rotate-180'}`}
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
             </div>
           )}
+        </aside>
 
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-gray-700 hover:bg-red-50 hover:text-red-700 rounded-lg transition"
-            title={isSidebarOpen ? '' : 'Logout'}
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            {isSidebarOpen && <span className="font-medium">Logout</span>}
-          </button>
-        </div>
-
-        {/* Toggle Sidebar */}
-        <div className="p-3 border-t border-gray-200">
-          <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="w-full flex items-center justify-center p-2 text-gray-600 hover:text-green-600 transition"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Top Bar */}
-        <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-gray-900">Dashboard</h2>
-          <div className="flex items-center gap-4">
-            <div className="text-sm text-gray-600">
-              Welcome, <span className="font-medium">{profile.fullName || 'User'}</span>
+        {/* Main Content */}
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {/* Top Bar */}
+          <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+            {/* Hamburger — mobile only */}
+            {isMobile && (
+              <button
+                onClick={() => setIsSidebarOpen(true)}
+                className="p-2 -ml-1 text-gray-600 hover:text-green-700 hover:bg-green-50 rounded-lg transition"
+                aria-label="Open menu"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+            )}
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              {isMobile && (
+                <div className="w-7 h-7 shrink-0 bg-green-600 rounded-full flex items-center justify-center text-white font-bold text-xs">
+                  HD
+                </div>
+              )}
+              <h2 className="text-lg font-semibold text-gray-900 truncate">Dashboard</h2>
             </div>
-          </div>
-        </header>
+            <div className="text-sm text-gray-600 shrink-0 hidden sm:block">
+              Welcome, <span className="font-medium">{profile.fullName?.split(' ')[0] || 'User'}</span>
+            </div>
+          </header>
 
-        {/* Content */}
-        <div className="flex-1 overflow-auto">
-          {children}
-        </div>
-      </main>
-    </div>
+          {/* Content */}
+          <div className="flex-1 overflow-auto">
+            {children}
+          </div>
+        </main>
+      </div>
     </>
   );
 }
