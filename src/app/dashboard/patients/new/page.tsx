@@ -81,6 +81,14 @@ export default function NewPatientPage() {
     if (!validateForm()) return;
     setIsLoading(true);
 
+    // Get authenticated user first
+    const { data: authData } = await supabase.auth.getUser();
+    if (!authData.user) {
+      setError('Your session has expired. Please log in again.');
+      setIsLoading(false);
+      return;
+    }
+
     const id = generateUUID();
     const patientId = generatePatientId();
     const now = new Date().toISOString();
@@ -101,6 +109,7 @@ export default function NewPatientPage() {
       emergency_contact_name: formData.emergencyContactName || null,
       emergency_contact_phone: formData.emergencyContactPhone || null,
       is_active: true,
+      created_by: authData.user.id,
       created_at: now,
     };
 
@@ -141,24 +150,33 @@ export default function NewPatientPage() {
     try {
       const { error: insertError } = await supabase.from('patients').insert(payload);
       if (insertError) {
-        // Fallback to offline save if Supabase fails
-        try {
-          const db = getLocalDB();
-          await db.patients.add({
-            id, patientId,
-            firstName: formData.firstName, lastName: formData.lastName,
-            dateOfBirth: formData.dateOfBirth, gender: formData.gender,
-            phone: formData.phone || null, email: formData.email || null,
-            address: formData.address || null, city: formData.city || null,
-            state: formData.state || null, postalCode: formData.postalCode || null,
-            emergencyContactName: formData.emergencyContactName || null,
-            emergencyContactPhone: formData.emergencyContactPhone || null,
-            createdAt: now, updatedAt: now, synced: false,
-          });
-          await enqueueAction('CREATE_PATIENT', payload);
-          setSavedOffline(true);
-          setIsLoading(false);
-        } catch {
+        // Only fall back to offline if it's a network/connectivity error
+        const isNetworkError = insertError.message.toLowerCase().includes('fetch') ||
+          insertError.message.toLowerCase().includes('network') ||
+          insertError.message.toLowerCase().includes('failed to fetch');
+        if (isNetworkError) {
+          try {
+            const db = getLocalDB();
+            await db.patients.add({
+              id, patientId,
+              firstName: formData.firstName, lastName: formData.lastName,
+              dateOfBirth: formData.dateOfBirth, gender: formData.gender,
+              phone: formData.phone || null, email: formData.email || null,
+              address: formData.address || null, city: formData.city || null,
+              state: formData.state || null, postalCode: formData.postalCode || null,
+              emergencyContactName: formData.emergencyContactName || null,
+              emergencyContactPhone: formData.emergencyContactPhone || null,
+              createdAt: now, updatedAt: now, synced: false,
+            });
+            await enqueueAction('CREATE_PATIENT', payload);
+            setSavedOffline(true);
+            setIsLoading(false);
+          } catch {
+            setError('Failed to save. Please try again.');
+            setIsLoading(false);
+          }
+        } else {
+          // Surface real DB errors — don't silently swallow them
           setError(insertError.message);
           setIsLoading(false);
         }

@@ -575,6 +575,12 @@ export default function VisitDetailPage() {
     if (!visit) return;
     setActionLoading('payment');
     try {
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!currentUser) {
+        setError('Your session has expired. Please log in again.');
+        setActionLoading(null);
+        return;
+      }
       const existingPayment = payments[0];
       if (existingPayment) {
         const newStatus = paymentDeferred ? 'deferred' : 'paid';
@@ -583,7 +589,7 @@ export default function VisitDetailPage() {
           .update({
             status: newStatus,
             method: paymentDeferred ? null : paymentMethod,
-            received_by: (await supabase.auth.getSession()).data.session?.user.id,
+            received_by: currentUser.id,
           })
           .eq('id', existingPayment.id);
 

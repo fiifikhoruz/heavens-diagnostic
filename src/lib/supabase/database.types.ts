@@ -49,6 +49,7 @@ export type Database = {
         Row: {
           id: string
           patient_id: string
+          created_by: string
           created_at: string
           updated_at: string
           first_name: string
@@ -71,6 +72,7 @@ export type Database = {
         Insert: {
           id?: string
           patient_id: string
+          created_by: string
           created_at?: string
           updated_at?: string
           first_name: string
@@ -93,6 +95,7 @@ export type Database = {
         Update: {
           id?: string
           patient_id?: string
+          created_by?: string
           created_at?: string
           updated_at?: string
           first_name?: string

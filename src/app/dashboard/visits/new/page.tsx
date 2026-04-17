@@ -350,10 +350,12 @@ export default function NewVisitPage() {
           visit_id: visitData.id,
           amount: calculateTotal(),
           status: 'unpaid',
+          received_by: authData.session.user.id,
         });
 
       if (paymentError) {
-        console.error('Failed to create payment:', paymentError);
+        // Non-fatal but surface it — visit is created, payment tracking failed
+        setError(`Visit created but payment record failed: ${paymentError.message}. Please record payment manually.`);
       }
 
       // Create timestamp for visit creation
@@ -366,6 +368,7 @@ export default function NewVisitPage() {
 
       if (timestampError) {
         console.error('Failed to create timestamp:', timestampError);
+        // Non-fatal — turnaround tracking may be incomplete but visit proceeds
       }
 
       // Clear draft after successful creation
