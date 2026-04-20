@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { UserRole, VisitStatus } from '@/lib/types';
@@ -30,125 +30,114 @@ export default function DoctorReviewPage() {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const { data: authData } = await supabase.auth.getSession();
-        if (!authData.session) return;
+  // Single joined query — no more N+1.
+  // Fetches visits → visit_tests → test_types + test_results in ONE round trip.
+  const fetchReviews = useCallback(async (opts: { showSpinner?: boolean } = {}) => {
+    try {
+      if (opts.showSpinner) setIsLoading(true);
 
-        // Get user role
-        const { data: profileData } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', authData.session.user.id)
-          .single();
+      const { data: authData } = await supabase.auth.getSession();
+      if (!authData.session) return;
 
-        if (profileData) {
-          setUserRole(profileData.role as UserRole);
-        }
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', authData.session.user.id)
+        .single();
 
-        // Fetch visits that are in review or processing status
-        const { data: visitsData, error: visitsError } = await supabase
-          .from('visits')
-          .select(`
-            id,
-            patient_id,
-            status,
-            visit_date,
-            patients!inner (
-              first_name,
-              last_name,
-              phone
-            )
-          `)
-          .in('status', ['review', 'processing'])
-          .order('visit_date', { ascending: true });
-
-        if (visitsError) {
-          console.error('Error fetching reviews:', visitsError);
-          setError('Failed to load review queue');
-          return;
-        }
-
-        if (visitsData) {
-          const reviewItems: ReviewItem[] = [];
-
-          for (const v of visitsData as any[]) {
-            // Fetch visit tests to count totals and abnormals
-            const { data: testsData } = await supabase
-              .from('visit_tests')
-              .select(`
-                id,
-                status,
-                test_type_id,
-                test_types!inner (name)
-              `)
-              .eq('visit_id', v.id);
-
-            const totalTests = testsData?.length || 0;
-            const completedTests = (testsData || []).filter((t: any) =>
-              ['completed', 'reviewed', 'approved'].includes(t.status)
-            ).length;
-
-            // Check for abnormal results
-            let abnormalCount = 0;
-            const abnormalTestNames: string[] = [];
-
-            for (const test of (testsData || []) as any[]) {
-              const { data: resultsData } = await supabase
-                .from('test_results')
-                .select('is_abnormal')
-                .eq('test_id', test.id)
-                .eq('is_abnormal', true);
-
-              if (resultsData && resultsData.length > 0) {
-                abnormalCount += resultsData.length;
-                const testName = test.test_types?.name || 'Unknown';
-                if (!abnormalTestNames.includes(testName)) {
-                  abnormalTestNames.push(testName);
-                }
-              }
-            }
-
-            reviewItems.push({
-              visitId: v.id,
-              patientId: v.patient_id,
-              patientFirstName: v.patients?.first_name || '',
-              patientLastName: v.patients?.last_name || '',
-              patientPhone: v.patients?.phone || null,
-              visitStatus: v.status as VisitStatus,
-              visitDate: v.visit_date,
-              totalTests,
-              completedTests,
-              abnormalCount,
-              abnormalTestNames,
-              hasAbnormal: abnormalCount > 0,
-            });
-          }
-
-          // Sort: abnormal cases first, then oldest first
-          reviewItems.sort((a, b) => {
-            if (a.hasAbnormal && !b.hasAbnormal) return -1;
-            if (!a.hasAbnormal && b.hasAbnormal) return 1;
-            if (a.abnormalCount !== b.abnormalCount) return b.abnormalCount - a.abnormalCount;
-            return new Date(a.visitDate).getTime() - new Date(b.visitDate).getTime();
-          });
-
-          setReviews(reviewItems);
-          setFilteredReviews(reviewItems);
-        }
-      } catch (err) {
-        console.error('Error loading review data:', err);
-        setError('Failed to load review data');
-      } finally {
-        setIsLoading(false);
+      if (profileData) {
+        setUserRole(profileData.role as UserRole);
       }
-    };
 
-    fetchData();
+      const { data: visitsData, error: visitsError } = await supabase
+        .from('visits')
+        .select(`
+          id,
+          patient_id,
+          status,
+          visit_date,
+          patients!inner (
+            first_name,
+            last_name,
+            phone
+          ),
+          visit_tests (
+            id,
+            status,
+            test_type_id,
+            test_types (name),
+            test_results (is_abnormal)
+          )
+        `)
+        .in('status', ['review', 'processing'])
+        .order('visit_date', { ascending: true });
+
+      if (visitsError) {
+        console.error('Error fetching reviews:', visitsError);
+        setError('Failed to load review queue. Please retry.');
+        return;
+      }
+
+      const reviewItems: ReviewItem[] = (visitsData || []).map((v: any) => {
+        const tests = (v.visit_tests || []) as any[];
+        const totalTests = tests.length;
+        const completedTests = tests.filter(t =>
+          ['completed', 'reviewed', 'approved'].includes(t.status)
+        ).length;
+
+        let abnormalCount = 0;
+        const abnormalTestNames: string[] = [];
+
+        for (const t of tests) {
+          const abnormalResults = ((t.test_results || []) as any[]).filter(r => r.is_abnormal);
+          if (abnormalResults.length > 0) {
+            abnormalCount += abnormalResults.length;
+            const testName = t.test_types?.name || 'Unknown';
+            if (!abnormalTestNames.includes(testName)) {
+              abnormalTestNames.push(testName);
+            }
+          }
+        }
+
+        return {
+          visitId: v.id,
+          patientId: v.patient_id,
+          patientFirstName: v.patients?.first_name || '',
+          patientLastName: v.patients?.last_name || '',
+          patientPhone: v.patients?.phone || null,
+          visitStatus: v.status as VisitStatus,
+          visitDate: v.visit_date,
+          totalTests,
+          completedTests,
+          abnormalCount,
+          abnormalTestNames,
+          hasAbnormal: abnormalCount > 0,
+        };
+      });
+
+      reviewItems.sort((a, b) => {
+        if (a.hasAbnormal && !b.hasAbnormal) return -1;
+        if (!a.hasAbnormal && b.hasAbnormal) return 1;
+        if (a.abnormalCount !== b.abnormalCount) return b.abnormalCount - a.abnormalCount;
+        return new Date(a.visitDate).getTime() - new Date(b.visitDate).getTime();
+      });
+
+      setReviews(reviewItems);
+      setError('');
+    } catch (err) {
+      console.error('Error loading review data:', err);
+      setError('Failed to load review data. Please retry.');
+    } finally {
+      if (opts.showSpinner) setIsLoading(false);
+    }
   }, [supabase]);
 
-  // Apply filters
+  useEffect(() => {
+    fetchReviews({ showSpinner: true });
+    const interval = setInterval(() => fetchReviews(), 10_000);
+    return () => clearInterval(interval);
+  }, [fetchReviews]);
+
   useEffect(() => {
     let filtered = [...reviews];
 
@@ -166,7 +155,6 @@ export default function DoctorReviewPage() {
   const handleApproveVisit = async (visitId: string) => {
     setActionLoading(visitId);
     try {
-      // Update visit status to approved
       const { error: updateError } = await supabase
         .from('visits')
         .update({ status: 'approved' })
@@ -175,7 +163,6 @@ export default function DoctorReviewPage() {
       if (updateError) {
         setError(`Failed to approve: ${updateError.message}`);
       } else {
-        // Also approve all visit_tests
         await supabase
           .from('visit_tests')
           .update({ status: 'approved' })
@@ -193,7 +180,6 @@ export default function DoctorReviewPage() {
   const handleRequestRetest = async (visitId: string) => {
     setActionLoading(visitId);
     try {
-      // Send visit back to processing
       const { error: updateError } = await supabase
         .from('visits')
         .update({ status: 'processing' })
@@ -235,7 +221,6 @@ export default function DoctorReviewPage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Doctor Review</h1>
         <p className="text-gray-600 mt-1">
@@ -245,17 +230,27 @@ export default function DoctorReviewPage() {
               ({reviews.filter(r => r.hasAbnormal).length} with abnormal results)
             </span>
           )}
+          <span className="ml-2 text-xs text-gray-400">· refreshes every 10s</span>
         </p>
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-          {error}
-          <button onClick={() => setError('')} className="ml-4 text-red-900 font-medium underline">Dismiss</button>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 flex items-start justify-between gap-4">
+          <span>{error}</span>
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={() => fetchReviews({ showSpinner: true })}
+              className="text-red-900 font-medium underline"
+            >
+              Retry
+            </button>
+            <button onClick={() => setError('')} className="text-red-900 font-medium underline">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Filters */}
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex flex-wrap gap-2">
           <button
@@ -293,7 +288,6 @@ export default function DoctorReviewPage() {
         </div>
       </div>
 
-      {/* Review Cards */}
       <div className="space-y-4">
         {isLoading ? (
           <div className="flex items-center justify-center p-12">

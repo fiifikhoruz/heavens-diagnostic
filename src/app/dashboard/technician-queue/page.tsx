@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { UserRole } from '@/lib/types';
@@ -39,109 +39,111 @@ export default function TechnicianQueuePage() {
   const [selectedTestIds, setSelectedTestIds] = useState<Set<string>>(new Set());
   const [selectAllChecked, setSelectAllChecked] = useState(false);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const { data: authData } = await supabase.auth.getSession();
-        if (!authData.session) return;
+  // Extracted so we can call it from the poll interval without resetting isLoading
+  const fetchQueue = useCallback(async (opts: { showSpinner?: boolean } = {}) => {
+    try {
+      if (opts.showSpinner) setIsLoading(true);
 
-        setUserId(authData.session.user.id);
+      const { data: authData } = await supabase.auth.getSession();
+      if (!authData.session) return;
 
-        // Get user role
-        const { data: profileData } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', authData.session.user.id)
-          .single();
+      setUserId(authData.session.user.id);
 
-        if (profileData) {
-          setUserRole(profileData.role as UserRole);
-        }
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', authData.session.user.id)
+        .single();
 
-        // Fetch technicians for assignment dropdown
-        const { data: techData } = await supabase
-          .from('profiles')
-          .select('id, full_name')
-          .in('role', ['technician', 'admin'])
-          .eq('is_active', true);
-
-        if (techData) {
-          setTechnicians((techData as any[]).map(t => ({
-            id: t.id,
-            fullName: t.full_name || 'Unknown',
-          })));
-        }
-
-        // Fetch queue - use the view or manual join
-        const { data: testsData, error: testsError } = await supabase
-          .from('visit_tests')
-          .select(`
-            id,
-            visit_id,
-            test_type_id,
-            assigned_to,
-            status,
-            created_at,
-            visits!inner (
-              id,
-              status,
-              visit_date,
-              patient_id,
-              patients!inner (
-                first_name,
-                last_name,
-                phone
-              )
-            ),
-            test_types!inner (
-              name,
-              category,
-              turnaround_hours
-            )
-          `)
-          .in('status', ['pending', 'in_progress'])
-          .order('created_at', { ascending: true });
-
-        if (testsError) {
-          console.error('Queue fetch error:', testsError);
-          setError('Failed to load technician queue');
-          return;
-        }
-
-        if (testsData) {
-          const mapped: QueueItem[] = (testsData as any[]).map(t => ({
-            testId: t.id,
-            visitId: t.visit_id,
-            testTypeId: t.test_type_id,
-            assignedTo: t.assigned_to,
-            testStatus: t.status,
-            testCreatedAt: t.created_at,
-            visitStatus: t.visits?.status || '',
-            visitDate: t.visits?.visit_date || '',
-            patientId: t.visits?.patient_id || '',
-            patientFirstName: t.visits?.patients?.first_name || '',
-            patientLastName: t.visits?.patients?.last_name || '',
-            patientPhone: t.visits?.patients?.phone || null,
-            testName: t.test_types?.name || '',
-            testCategory: t.test_types?.category || '',
-            paymentStatus: null, // fetched separately if needed
-            turnaroundHours: t.test_types?.turnaround_hours || 24,
-          }));
-          setQueue(mapped);
-          setFilteredQueue(mapped);
-        }
-      } catch (err) {
-        console.error('Error loading queue:', err);
-        setError('Failed to load queue data');
-      } finally {
-        setIsLoading(false);
+      if (profileData) {
+        setUserRole(profileData.role as UserRole);
       }
-    };
 
-    fetchData();
+      const { data: techData } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .in('role', ['technician', 'admin'])
+        .eq('is_active', true);
+
+      if (techData) {
+        setTechnicians((techData as any[]).map(t => ({
+          id: t.id,
+          fullName: t.full_name || 'Unknown',
+        })));
+      }
+
+      const { data: testsData, error: testsError } = await supabase
+        .from('visit_tests')
+        .select(`
+          id,
+          visit_id,
+          test_type_id,
+          assigned_to,
+          status,
+          created_at,
+          visits!inner (
+            id,
+            status,
+            visit_date,
+            patient_id,
+            patients!inner (
+              first_name,
+              last_name,
+              phone
+            )
+          ),
+          test_types!inner (
+            name,
+            category,
+            turnaround_hours
+          )
+        `)
+        .in('status', ['pending', 'in_progress'])
+        .order('created_at', { ascending: true });
+
+      if (testsError) {
+        console.error('Queue fetch error:', testsError);
+        setError('Failed to load technician queue. Please retry.');
+        return;
+      }
+
+      if (testsData) {
+        const mapped: QueueItem[] = (testsData as any[]).map(t => ({
+          testId: t.id,
+          visitId: t.visit_id,
+          testTypeId: t.test_type_id,
+          assignedTo: t.assigned_to,
+          testStatus: t.status,
+          testCreatedAt: t.created_at,
+          visitStatus: t.visits?.status || '',
+          visitDate: t.visits?.visit_date || '',
+          patientId: t.visits?.patient_id || '',
+          patientFirstName: t.visits?.patients?.first_name || '',
+          patientLastName: t.visits?.patients?.last_name || '',
+          patientPhone: t.visits?.patients?.phone || null,
+          testName: t.test_types?.name || '',
+          testCategory: t.test_types?.category || '',
+          paymentStatus: null,
+          turnaroundHours: t.test_types?.turnaround_hours || 24,
+        }));
+        setQueue(mapped);
+        setFilteredQueue(mapped);
+        setError('');
+      }
+    } catch (err) {
+      console.error('Error loading queue:', err);
+      setError('Failed to load queue data. Please retry.');
+    } finally {
+      if (opts.showSpinner) setIsLoading(false);
+    }
   }, [supabase]);
 
-  // Apply filters and sort
+  useEffect(() => {
+    fetchQueue({ showSpinner: true });
+    const interval = setInterval(() => fetchQueue(), 10_000);
+    return () => clearInterval(interval);
+  }, [fetchQueue]);
+
   useEffect(() => {
     let filtered = [...queue];
 
@@ -155,7 +157,6 @@ export default function TechnicianQueuePage() {
       filtered = filtered.filter(item => !item.assignedTo);
     }
 
-    // Sort with overdue items first, then by creation date
     filtered.sort((a, b) => {
       const hoursElapsedA = (Date.now() - new Date(a.testCreatedAt).getTime()) / (1000 * 60 * 60);
       const isOverdueA = hoursElapsedA > a.turnaroundHours;
@@ -300,7 +301,6 @@ export default function TechnicianQueuePage() {
       if (updateError) {
         setError(`Failed to complete test: ${updateError.message}`);
       } else {
-        // Remove from queue
         setQueue(prev => prev.filter(item => item.testId !== testId));
       }
     } catch (err) {
@@ -352,22 +352,31 @@ export default function TechnicianQueuePage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Technician Queue</h1>
         <p className="text-gray-600 mt-1">
           {filteredQueue.length} test{filteredQueue.length !== 1 ? 's' : ''} pending processing
+          <span className="ml-2 text-xs text-gray-400">· refreshes every 10s</span>
         </p>
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-          {error}
-          <button onClick={() => setError('')} className="ml-4 text-red-900 font-medium underline">Dismiss</button>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 flex items-start justify-between gap-4">
+          <span>{error}</span>
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={() => fetchQueue({ showSpinner: true })}
+              className="text-red-900 font-medium underline"
+            >
+              Retry
+            </button>
+            <button onClick={() => setError('')} className="text-red-900 font-medium underline">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Filters and Bulk Actions */}
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex flex-wrap gap-4 mb-4">
           <div>
@@ -445,7 +454,6 @@ export default function TechnicianQueuePage() {
         )}
       </div>
 
-      {/* Queue Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
         {isLoading ? (
           <div className="flex items-center justify-center p-12">

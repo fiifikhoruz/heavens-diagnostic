@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -63,15 +63,16 @@ export default function DoctorDashboard() {
   const [selectAllChecked, setSelectAllChecked] = useState(false);
   const [approvingBulk, setApprovingBulk] = useState(false);
 
-  // Fetch user profile and check role
+  // Profile fetch — always clears `loading` on completion so we never spin forever.
   useEffect(() => {
+    let cancelled = false;
     async function fetchUserProfile() {
       try {
         const {
           data: { user },
         } = await supabase.auth.getUser();
         if (!user) {
-          router.push('/auth/login');
+          router.push('/login');
           return;
         }
 
@@ -83,157 +84,157 @@ export default function DoctorDashboard() {
 
         if (profileError) throw profileError;
 
-        // Role gate check
         if (!['doctor', 'admin'].includes(profile.role)) {
           router.push('/dashboard');
           return;
         }
 
-        setUserProfile(profile);
+        if (!cancelled) setUserProfile(profile);
       } catch (err) {
-        setError('Failed to fetch user profile');
+        if (!cancelled) {
+          setError('Failed to load your profile. Please retry.');
+          setLoading(false); // critical: don't leave the spinner on forever
+        }
         console.error('Profile error:', err);
       }
     }
 
     fetchUserProfile();
+    return () => {
+      cancelled = true;
+    };
   }, [router, supabase]);
 
-  // Fetch all dashboard data
-  useEffect(() => {
+  const fetchDashboardData = useCallback(async (opts: { showSpinner?: boolean } = {}) => {
     if (!userProfile) return;
+    try {
+      if (opts.showSpinner) setLoading(true);
 
-    async function fetchDashboardData() {
-      try {
-        setLoading(true);
-
-        // Fetch cases needing review
-        const { data: casesData, error: casesError } = await supabase
-          .from('visits')
-          .select(
-            `
+      const { data: casesData, error: casesError } = await supabase
+        .from('visits')
+        .select(
+          `
+          id,
+          patient_id,
+          visit_date,
+          status,
+          created_at,
+          updated_at,
+          patients!inner(first_name, last_name, phone),
+          visit_tests!inner(
             id,
-            patient_id,
-            visit_date,
+            test_type_id,
             status,
-            created_at,
-            updated_at,
-            patients!inner(first_name, last_name, phone),
-            visit_tests!inner(
-              id,
-              test_type_id,
-              status,
-              test_types!inner(name),
-              test_results(is_abnormal)
-            )
-          `
+            test_types!inner(name),
+            test_results(is_abnormal)
           )
-          .in('status', ['review', 'processing'])
-          .order('created_at', { ascending: false });
+        `
+        )
+        .in('status', ['review', 'processing'])
+        .order('created_at', { ascending: false });
 
-        if (casesError) throw casesError;
+      if (casesError) throw casesError;
 
-        // Process cases data
-        const processedCases: CaseForReview[] = (casesData || [])
-          .map((visit: any) => {
-            const hasAbnormal = (visit.visit_tests || []).some((test: any) =>
-              (test.test_results || []).some((result: any) => result.is_abnormal)
-            );
-            return {
-              id: visit.id,
-              patient_id: visit.patient_id,
-              patient_first_name: visit.patients.first_name,
-              patient_last_name: visit.patients.last_name,
-              patient_phone: visit.patients.phone || null,
-              visit_date: visit.visit_date,
-              status: visit.status,
-              test_count: (visit.visit_tests || []).length,
-              test_names: (visit.visit_tests || []).map((t: any) => t.test_types.name),
-              has_abnormal: hasAbnormal,
-              created_at: visit.created_at,
-              updated_at: visit.updated_at,
-            };
-          })
-          .sort((a: CaseForReview, b: CaseForReview) => {
-            // Sort abnormal cases to top
-            if (a.has_abnormal && !b.has_abnormal) return -1;
-            if (!a.has_abnormal && b.has_abnormal) return 1;
-            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-          });
-
-        setCasesForReview(processedCases);
-
-        // Fetch stats
-        const today = new Date().toISOString().split('T')[0];
-
-        // Count abnormal cases
-        const abnormalCases = processedCases.filter((c) => c.has_abnormal).length;
-
-        // Count approved today
-        const { data: approvedTodayData, error: approvedError } = await supabase
-          .from('visits')
-          .select('id')
-          .eq('status', 'approved')
-          .gte('created_at', `${today}T00:00:00`)
-          .lt('created_at', `${today}T23:59:59`);
-
-        if (approvedError) throw approvedError;
-        const approvedToday = (approvedTodayData || []).length;
-
-        // Count total pending
-        const { data: totalPendingData, error: pendingError } = await supabase
-          .from('visits')
-          .select('id')
-          .in('status', ['review', 'processing']);
-
-        if (pendingError) throw pendingError;
-        const totalPending = (totalPendingData || []).length;
-
-        setStats({
-          awaiting_review: processedCases.filter((c) => c.status === 'review').length,
-          abnormal_cases: abnormalCases,
-          approved_today: approvedToday,
-          total_pending: totalPending,
-        });
-
-        // Fetch recent approvals
-        const { data: approvalsData, error: approvalsError } = await supabase
-          .from('visits')
-          .select(
-            `
-            id,
-            visit_date,
-            created_at,
-            patients(first_name, last_name)
-          `
-          )
-          .eq('status', 'approved')
-          .order('created_at', { ascending: false })
-          .limit(10);
-
-        if (approvalsError) throw approvalsError;
-
-        const processedApprovals: RecentApproval[] = (approvalsData || []).map(
-          (visit: any) => ({
+      const processedCases: CaseForReview[] = (casesData || [])
+        .map((visit: any) => {
+          const hasAbnormal = (visit.visit_tests || []).some((test: any) =>
+            (test.test_results || []).some((result: any) => result.is_abnormal)
+          );
+          return {
             id: visit.id,
+            patient_id: visit.patient_id,
             patient_first_name: visit.patients.first_name,
             patient_last_name: visit.patients.last_name,
+            patient_phone: visit.patients.phone || null,
             visit_date: visit.visit_date,
-            approved_at: visit.created_at,
-          })
-        );
+            status: visit.status,
+            test_count: (visit.visit_tests || []).length,
+            test_names: (visit.visit_tests || []).map((t: any) => t.test_types.name),
+            has_abnormal: hasAbnormal,
+            created_at: visit.created_at,
+            updated_at: visit.updated_at,
+          };
+        })
+        .sort((a: CaseForReview, b: CaseForReview) => {
+          if (a.has_abnormal && !b.has_abnormal) return -1;
+          if (!a.has_abnormal && b.has_abnormal) return 1;
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
 
-        setRecentApprovals(processedApprovals);
-      } catch (err) {
-        setError('Failed to fetch dashboard data');
-        console.error('Dashboard error:', err);
-      } finally {
-        setLoading(false);
-      }
+      setCasesForReview(processedCases);
+
+      const today = new Date().toISOString().split('T')[0];
+
+      const abnormalCases = processedCases.filter((c) => c.has_abnormal).length;
+
+      const { data: approvedTodayData, error: approvedError } = await supabase
+        .from('visits')
+        .select('id')
+        .eq('status', 'approved')
+        .gte('created_at', `${today}T00:00:00`)
+        .lt('created_at', `${today}T23:59:59`);
+
+      if (approvedError) throw approvedError;
+      const approvedToday = (approvedTodayData || []).length;
+
+      const { data: totalPendingData, error: pendingError } = await supabase
+        .from('visits')
+        .select('id')
+        .in('status', ['review', 'processing']);
+
+      if (pendingError) throw pendingError;
+      const totalPending = (totalPendingData || []).length;
+
+      setStats({
+        awaiting_review: processedCases.filter((c) => c.status === 'review').length,
+        abnormal_cases: abnormalCases,
+        approved_today: approvedToday,
+        total_pending: totalPending,
+      });
+
+      const { data: approvalsData, error: approvalsError } = await supabase
+        .from('visits')
+        .select(
+          `
+          id,
+          visit_date,
+          created_at,
+          patients(first_name, last_name)
+        `
+        )
+        .eq('status', 'approved')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (approvalsError) throw approvalsError;
+
+      const processedApprovals: RecentApproval[] = (approvalsData || []).map(
+        (visit: any) => ({
+          id: visit.id,
+          patient_first_name: visit.patients.first_name,
+          patient_last_name: visit.patients.last_name,
+          visit_date: visit.visit_date,
+          approved_at: visit.created_at,
+        })
+      );
+
+      setRecentApprovals(processedApprovals);
+      setError(null);
+    } catch (err) {
+      setError('Failed to load dashboard data. Please retry.');
+      console.error('Dashboard error:', err);
+    } finally {
+      if (opts.showSpinner) setLoading(false);
     }
-
-    fetchDashboardData();
   }, [userProfile, supabase]);
+
+  // Initial load + 10s polling for live updates
+  useEffect(() => {
+    if (!userProfile) return;
+    fetchDashboardData({ showSpinner: true });
+    const interval = setInterval(() => fetchDashboardData(), 10_000);
+    return () => clearInterval(interval);
+  }, [userProfile, fetchDashboardData]);
 
   const handleToggleSelect = (caseId: string) => {
     const newSelected = new Set(selectedCaseIds);
@@ -269,7 +270,6 @@ export default function DoctorDashboard() {
 
       if (error) throw error;
 
-      // Remove approved cases from list
       const approvedCount = visitIdArray.length;
       setCasesForReview((prev) => prev.filter((c) => !visitIdArray.includes(c.id)));
       setSelectedCaseIds(new Set());
@@ -287,7 +287,6 @@ export default function DoctorDashboard() {
     }
   };
 
-  // Handle approve button
   const handleApprove = async (visitId: string) => {
     try {
       const { error } = await supabase
@@ -297,7 +296,6 @@ export default function DoctorDashboard() {
 
       if (error) throw error;
 
-      // Refresh cases
       setCasesForReview((prev) => prev.filter((c) => c.id !== visitId));
       setStats((prev) => ({
         ...prev,
@@ -310,7 +308,6 @@ export default function DoctorDashboard() {
     }
   };
 
-  // Handle request retest button
   const handleRequestRetest = async (visitId: string) => {
     try {
       const { error } = await supabase
@@ -320,7 +317,6 @@ export default function DoctorDashboard() {
 
       if (error) throw error;
 
-      // Update case status in local state
       setCasesForReview((prev) =>
         prev.map((c) =>
           c.id === visitId ? { ...c, status: 'processing' } : c
@@ -332,7 +328,6 @@ export default function DoctorDashboard() {
     }
   };
 
-  // Handle add doctor note
   const handleAddNote = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!noteContent.trim() || !noteVisitId.trim() || !userProfile) {
@@ -362,6 +357,28 @@ export default function DoctorDashboard() {
     }
   };
 
+  // Blocking error state — show a clear fallback instead of spinning forever
+  if (error && !userProfile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <div className="max-w-md bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+          <p className="text-red-800 font-semibold mb-2">Something went wrong</p>
+          <p className="text-red-700 text-sm mb-4">{error}</p>
+          <button
+            onClick={() => {
+              setError(null);
+              setLoading(true);
+              window.location.reload();
+            }}
+            className="px-4 py-2 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -373,22 +390,31 @@ export default function DoctorDashboard() {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* Header */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Doctor Dashboard</h1>
           <p className="text-gray-600 mt-2">
             Welcome, {userProfile?.full_name || 'Doctor'}. Review and approve patient results below.
+            <span className="ml-2 text-xs text-gray-400">· refreshes every 10s</span>
           </p>
         </div>
 
-        {/* Error Alert */}
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start justify-between gap-4">
             <p className="text-red-700">{error}</p>
+            <div className="flex gap-2 shrink-0">
+              <button
+                onClick={() => fetchDashboardData({ showSpinner: true })}
+                className="text-red-900 font-medium underline"
+              >
+                Retry
+              </button>
+              <button onClick={() => setError(null)} className="text-red-900 font-medium underline">
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 
-        {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           <div className="bg-white rounded-lg shadow p-6">
             <div className="text-gray-600 text-sm font-medium">Awaiting Review</div>
@@ -408,9 +434,7 @@ export default function DoctorDashboard() {
           </div>
         </div>
 
-        {/* Main Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Cases Needing Review - Left Column (2/3 width) */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-lg shadow">
               <div className="border-b border-gray-200 px-6 py-4">
@@ -567,9 +591,7 @@ export default function DoctorDashboard() {
             </div>
           </div>
 
-          {/* Right Column - Recent Approvals and Notes Form */}
           <div className="space-y-8">
-            {/* Recent Approvals */}
             <div className="bg-white rounded-lg shadow">
               <div className="border-b border-gray-200 px-6 py-4">
                 <h3 className="text-lg font-bold text-gray-900">Recent Approvals</h3>
@@ -596,7 +618,6 @@ export default function DoctorDashboard() {
               )}
             </div>
 
-            {/* Doctor Notes Quick Add */}
             <div className="bg-white rounded-lg shadow">
               <div className="border-b border-gray-200 px-6 py-4">
                 <h3 className="text-lg font-bold text-gray-900">Add Doctor Note</h3>
