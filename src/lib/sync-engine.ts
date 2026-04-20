@@ -41,6 +41,10 @@ async function processItem(item: SyncQueueItem): Promise<void> {
   const supabase = createClient();
   const db = getLocalDB();
 
+  // Get current user once — used to patch missing created_by on legacy payloads
+  const { data: { user: currentUser } } = await supabase.auth.getUser();
+  if (!currentUser) throw new Error('Not authenticated — cannot sync');
+
   switch (item.action) {
     case 'CREATE_PATIENT': {
       const table = 'patients';
@@ -58,10 +62,15 @@ async function processItem(item: SyncQueueItem): Promise<void> {
         return; // don't throw — this isn't a retry-able error
       }
 
+      // Ensure created_by is always set (guards against legacy offline payloads)
+      const patientPayload = item.payload.created_by
+        ? item.payload
+        : { ...item.payload, created_by: currentUser.id };
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { error } = await (supabase as any)
         .from(table)
-        .upsert(item.payload, { onConflict: 'id' });
+        .upsert(patientPayload, { onConflict: 'id' });
       if (error) throw new Error(error.message);
       break;
     }
@@ -81,10 +90,15 @@ async function processItem(item: SyncQueueItem): Promise<void> {
         return;
       }
 
+      // Ensure created_by is always set (guards against legacy offline payloads)
+      const visitPayload = item.payload.created_by
+        ? item.payload
+        : { ...item.payload, created_by: currentUser.id };
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { error } = await (supabase as any)
         .from(table)
-        .upsert(item.payload, { onConflict: 'id' });
+        .upsert(visitPayload, { onConflict: 'id' });
       if (error) throw new Error(error.message);
       break;
     }
