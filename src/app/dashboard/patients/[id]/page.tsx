@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { formatGHS } from '@/lib/currency';
 import { createClient } from '@/lib/supabase/client';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
@@ -17,7 +18,7 @@ import {
   ChevronRight,
   Clock,
   FileText,
-  DollarSign,
+  Banknote,
   User,
 } from 'lucide-react';
 
@@ -508,9 +509,9 @@ export default function PatientProfilePage() {
                               <div className="mb-3">
                                 {visit.payments.map(payment => (
                                   <div key={payment.id} className="flex items-center gap-2 text-sm">
-                                    <DollarSign className="w-4 h-4 text-gray-600" />
+                                    <Banknote className="w-4 h-4 text-gray-600" />
                                     <span className="text-gray-900">
-                                      Amount: <span className="font-semibold">${payment.amount.toFixed(2)}</span>
+                                      Amount: <span className="font-semibold">{formatGHS(payment.amount)}</span>
                                     </span>
                                     <span className={`ml-auto px-2 py-0.5 rounded text-xs font-medium ${
                                       payment.status === 'paid'

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { formatGHS } from '@/lib/currency';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
@@ -617,7 +618,7 @@ export default function NewVisitPage() {
             </div>
             <div className="border-t border-gray-200 pt-2 flex justify-between">
               <span className="font-semibold text-gray-900">Estimated Total:</span>
-              <span className="font-bold text-lg text-green-600">${calculateTotal().toFixed(2)}</span>
+              <span className="font-bold text-lg text-green-600">{formatGHS(calculateTotal())}</span>
             </div>
           </div>
         </div>
