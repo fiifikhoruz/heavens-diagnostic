@@ -1,187 +1,102 @@
-import { createServerClient } from '@supabase/ssr';
-import { createClient } from '@supabase/supabase-js';
-import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
-import { Database } from '@/lib/supabase/database.types';
+import { createClient } from '@supabase/supabase-js';
 
-// Admin client — used only for non-fatal security helpers (rate limit, lock check).
-// If SUPABASE_SERVICE_ROLE_KEY is not set these calls fail silently — login still works.
-const supabaseAdmin = createClient(
+// Plain anon client — used for username lookup RPC and signInWithPassword.
+// No cookies, no server client, no service role needed for the core login flow.
+const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'missing',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
-function getClientIp(request: NextRequest): string {
-  const forwardedFor = request.headers.get('x-forwarded-for');
-  const realIp = request.headers.get('x-real-ip');
-  return forwardedFor?.split(',')[0].trim() || realIp || 'unknown';
-}
+// Admin client — used only for non-fatal security logging.
+// Falls back gracefully if SUPABASE_SERVICE_ROLE_KEY is not set.
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'not-configured',
+);
 
-function getUserAgent(request: NextRequest): string {
-  return request.headers.get('user-agent') || 'unknown';
+function getClientIp(req: NextRequest): string {
+  return req.headers.get('x-forwarded-for')?.split(',')[0].trim()
+    ?? req.headers.get('x-real-ip')
+    ?? 'unknown';
 }
 
 /**
- * Resolve username → Supabase auth email via SECURITY DEFINER RPC.
- * Uses the anon-key server client — no service role required.
- * Falls back to treating the input as a raw email (for legacy accounts).
+ * Resolve a username (or raw email) to the Supabase auth email.
+ * - If the input already contains "@" it is an email → use directly.
+ * - Otherwise try the lookup_email_by_username() RPC (runs SECURITY DEFINER,
+ *   so the anon key is sufficient).
+ * - If the RPC fails or returns nothing, fall back to treating input as email.
+ * Never throws.
  */
-async function resolveToEmail(usernameOrEmail: string): Promise<string> {
-  const input = usernameOrEmail.trim().toLowerCase();
+async function resolveToEmail(input: string): Promise<string> {
+  const normalized = input.trim().toLowerCase();
+
+  // Looks like an email already — skip the RPC
+  if (normalized.includes('@')) return normalized;
 
   try {
-    const cookieStore = await cookies();
-    const supabase = createServerClient<Database>(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() { return cookieStore.getAll(); },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) =>
-                cookieStore.set(name, value, options as any)
-              );
-            } catch { /* ignored */ }
-          },
-        },
-      }
+    const { data, error } = await (supabase as any).rpc(
+      'lookup_email_by_username',
+      { p_username: normalized },
     );
-
-    const { data, error } = await (supabase as any).rpc('lookup_email_by_username', {
-      p_username: input,
-    });
-
-    if (!error && data) {
-      return data as string;
-    }
-
-    if (error) {
-      console.warn('[login] lookup_email_by_username error (non-fatal):', error.message);
-    }
-  } catch (err) {
-    console.warn('[login] resolveToEmail threw (non-fatal):', err);
+    if (!error && data) return data as string;
+    if (error) console.warn('[login] lookup_email_by_username:', error.message);
+  } catch (e) {
+    console.warn('[login] resolveToEmail error (non-fatal):', e);
   }
 
-  // Fall back: treat input as a raw email (handles existing accounts
-  // created before username login, e.g. odoifiifi@gmail.com)
-  return input;
+  // Last resort — treat the input as a direct email
+  return normalized;
 }
 
-/**
- * POST /api/auth/login
- *
- * Authenticates via username (or legacy email) + password.
- * Rate limiting and account locking are non-fatal — if those DB functions
- * error they are logged and skipped, never blocking login.
- */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const body = await request.json();
-    const { username, password } = body as { username: string; password: string };
+    const { username, password } = body as { username?: string; password?: string };
 
-    if (!username || !password) {
+    if (!username?.trim() || !password) {
       return NextResponse.json(
-        { error: 'Username and password are required' },
-        { status: 400 }
+        { error: 'Username and password are required.' },
+        { status: 400 },
       );
     }
 
-    const clientIp = getClientIp(request);
-    const userAgent = getUserAgent(request);
+    // ── 1. Resolve to email ─────────────────────────────────────────────────
+    const email = await resolveToEmail(username);
 
-    // ── 1. Resolve username → internal email ────────────────────────────────
-    const resolvedEmail = await resolveToEmail(username);
-
-    // ── 2. Rate limit check (non-fatal) ─────────────────────────────────────
-    try {
-      const { data: rateOk } = await (supabaseAdmin as any).rpc('check_rate_limit', {
-        p_ip: clientIp,
-        p_window_minutes: 15,
-        p_max_attempts: 10,
-      });
-      if (rateOk === false) {
-        return NextResponse.json(
-          { error: 'Too many requests. Please try again later.' },
-          { status: 429 }
-        );
-      }
-    } catch (e) {
-      console.warn('[login] check_rate_limit error (non-fatal):', e);
-    }
-
-    // ── 3. Account lock check (non-fatal) ───────────────────────────────────
-    try {
-      const { data: lockRows, error: lockErr } = await (supabaseAdmin as any).rpc(
-        'check_account_lock',
-        { user_email: resolvedEmail }
-      );
-      if (!lockErr && lockRows?.[0]?.is_locked) {
-        await (supabaseAdmin as any).rpc('record_login_attempt', {
-          p_email: resolvedEmail,
-          p_ip: clientIp,
-          p_user_agent: userAgent,
-          p_success: false,
-        }).catch(() => {});
-
-        return NextResponse.json(
-          { error: 'Account is temporarily locked due to too many failed attempts. Please try again in 30 minutes.' },
-          { status: 423 }
-        );
-      }
-      if (lockErr) {
-        console.warn('[login] check_account_lock error (non-fatal):', lockErr.message);
-      }
-    } catch (e) {
-      console.warn('[login] check_account_lock threw (non-fatal):', e);
-    }
-
-    // ── 4. Authenticate with Supabase Auth ──────────────────────────────────
-    const supabaseAuth = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
-
-    const { data, error } = await supabaseAuth.auth.signInWithPassword({
-      email: resolvedEmail,
+    // ── 2. Authenticate ─────────────────────────────────────────────────────
+    const { data, error: authError } = await supabase.auth.signInWithPassword({
+      email,
       password,
     });
 
-    if (error) {
-      await (supabaseAdmin as any).rpc('record_login_attempt', {
-        p_email: resolvedEmail,
-        p_ip: clientIp,
-        p_user_agent: userAgent,
-        p_success: false,
-      }).catch(() => {});
+    const ip = getClientIp(request);
+    const ua = request.headers.get('user-agent') ?? 'unknown';
+
+    if (authError) {
+      // Record failed attempt — non-fatal
+      await (supabaseAdmin as any)
+        .rpc('record_login_attempt', { p_email: email, p_ip: ip, p_user_agent: ua, p_success: false })
+        .catch(() => {});
 
       return NextResponse.json(
         { error: 'Invalid username or password.' },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
-    // ── 5. Record success (non-fatal) ───────────────────────────────────────
-    await (supabaseAdmin as any).rpc('record_login_attempt', {
-      p_email: resolvedEmail,
-      p_ip: clientIp,
-      p_user_agent: userAgent,
-      p_success: true,
-    }).catch(() => {});
+    // ── 3. Record success — non-fatal ───────────────────────────────────────
+    await (supabaseAdmin as any)
+      .rpc('record_login_attempt', { p_email: email, p_ip: ip, p_user_agent: ua, p_success: true })
+      .catch(() => {});
 
-    return NextResponse.json({
-      session: data.session,
-      user: {
-        id: data.user?.id,
-        email: data.user?.email,
-        user_metadata: data.user?.user_metadata,
-      },
-    });
+    return NextResponse.json({ session: data.session });
   } catch (err) {
-    console.error('[login] Unhandled error:', err);
+    console.error('[login] unhandled error:', err);
     return NextResponse.json(
       { error: 'An unexpected error occurred. Please try again.' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
