@@ -8,18 +8,8 @@ const supabaseAdmin = createClient(
 );
 
 interface LoginRequest {
-  email: string;
+  username: string;
   password: string;
-}
-
-interface LoginAttemptCheckResponse {
-  is_locked: boolean;
-  failed_count: number;
-  lock_until: string;
-}
-
-interface RateLimitCheckResponse {
-  success: boolean;
 }
 
 /**
@@ -40,31 +30,58 @@ function getUserAgent(request: NextRequest): string {
 }
 
 /**
+ * Resolve a username or email string to the internal email used by Supabase Auth.
+ *
+ * Strategy:
+ *   1. Look for a profile where username = input (exact match, case-insensitive)
+ *   2. If found → return that profile's email (may be username@staff.heavens or a real email)
+ *   3. If not found → treat the input itself as the email (backwards compat for
+ *      existing accounts created before username login was introduced)
+ */
+async function resolveToEmail(usernameOrEmail: string): Promise<string> {
+  const input = usernameOrEmail.trim().toLowerCase();
+
+  const { data: profile } = await (supabaseAdmin as any)
+    .from('profiles')
+    .select('email')
+    .ilike('username', input)
+    .maybeSingle();
+
+  if (profile?.email) {
+    return profile.email as string;
+  }
+
+  // Fall back: treat input as a direct email (handles legacy admin accounts)
+  return input;
+}
+
+/**
  * POST /api/auth/login
  *
- * Authenticates a user with email and password while enforcing:
+ * Authenticates a user with username (or legacy email) and password, enforcing:
  * - Rate limiting (per IP address)
  * - Account locking (after 5 failed attempts in 15 minutes)
  * - Login attempt tracking
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    // Parse and validate request body
     const body = await request.json() as LoginRequest;
-    const { email, password } = body;
+    const { username, password } = body;
 
-    if (!email || !password) {
+    if (!username || !password) {
       return NextResponse.json(
-        { error: 'Email and password are required' },
+        { error: 'Username and password are required' },
         { status: 400 }
       );
     }
 
-    // Extract request metadata
     const clientIp = getClientIp(request);
     const userAgent = getUserAgent(request);
 
-    // Step 1: Check rate limit (10 attempts per IP per 15 minutes)
+    // ── 1. Resolve username → internal email ────────────────────────────────
+    const resolvedEmail = await resolveToEmail(username);
+
+    // ── 2. Rate limit check (10 attempts per IP per 15 minutes) ────────────
     const rateLimitResult = await (supabaseAdmin as any).rpc(
       'check_rate_limit',
       {
@@ -81,12 +98,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Step 2: Check account lock status (5+ failed attempts in 15 minutes auto-locks)
+    // ── 3. Account lock check ───────────────────────────────────────────────
     const lockCheckResult = await (supabaseAdmin as any).rpc(
       'check_account_lock',
-      {
-        user_email: email,
-      }
+      { user_email: resolvedEmail }
     );
 
     if (lockCheckResult.error) {
@@ -99,9 +114,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const lockData = lockCheckResult.data?.[0];
     if (lockData?.is_locked) {
-      // Record the failed attempt
       await supabaseAdmin.rpc('record_login_attempt', {
-        p_email: email,
+        p_email: resolvedEmail,
         p_ip: clientIp,
         p_user_agent: userAgent,
         p_success: false,
@@ -115,50 +129,39 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Step 3: Attempt authentication via Supabase Auth
+    // ── 4. Authenticate ─────────────────────────────────────────────────────
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     );
 
     const { data, error } = await supabase.auth.signInWithPassword({
-      email,
+      email: resolvedEmail,
       password,
     });
 
     if (error) {
-      // Record failed login attempt
-      const attemptResult = await supabaseAdmin.rpc('record_login_attempt', {
-        p_email: email,
+      await supabaseAdmin.rpc('record_login_attempt', {
+        p_email: resolvedEmail,
         p_ip: clientIp,
         p_user_agent: userAgent,
         p_success: false,
       });
 
-      if (attemptResult.error) {
-        console.error('Failed to record login attempt:', attemptResult.error);
-      }
-
       return NextResponse.json(
-        { error: 'Invalid email or password.' },
+        { error: 'Invalid username or password.' },
         { status: 401 }
       );
     }
 
-    // Step 4: Record successful login
-    const successResult = await supabaseAdmin.rpc('record_login_attempt', {
-      p_email: email,
+    // ── 5. Record success ───────────────────────────────────────────────────
+    await supabaseAdmin.rpc('record_login_attempt', {
+      p_email: resolvedEmail,
       p_ip: clientIp,
       p_user_agent: userAgent,
       p_success: true,
     });
 
-    if (successResult.error) {
-      console.error('Failed to record successful login:', successResult.error);
-      // Continue despite logging failure - auth was successful
-    }
-
-    // Step 5: Return session and user data
     return NextResponse.json({
       session: data.session,
       user: {
@@ -184,9 +187,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 }
 
-/**
- * Disable other HTTP methods
- */
 export async function GET(): Promise<NextResponse> {
   return NextResponse.json(
     { error: 'Method not allowed' },

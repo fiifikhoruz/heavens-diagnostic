@@ -15,6 +15,7 @@ export type Database = {
           created_at: string
           updated_at: string
           email: string
+          username: string | null
           full_name: string | null
           role: 'front_desk' | 'technician' | 'doctor' | 'admin'
           phone: string | null
@@ -26,6 +27,7 @@ export type Database = {
           created_at?: string
           updated_at?: string
           email: string
+          username?: string | null
           full_name?: string | null
           role: 'front_desk' | 'technician' | 'doctor' | 'admin'
           phone?: string | null
@@ -37,6 +39,7 @@ export type Database = {
           created_at?: string
           updated_at?: string
           email?: string
+          username?: string | null
           full_name?: string | null
           role?: 'front_desk' | 'technician' | 'doctor' | 'admin'
           phone?: string | null

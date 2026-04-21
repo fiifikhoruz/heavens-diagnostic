@@ -82,6 +82,7 @@ export interface Profile {
   createdAt: string;
   updatedAt: string;
   email: string;
+  username: string | null;
   fullName: string | null;
   role: UserRole;
   phone: string | null;

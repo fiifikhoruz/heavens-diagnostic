@@ -228,6 +228,7 @@ export default function DashboardLayout({
           createdAt: data.created_at,
           updatedAt: data.updated_at,
           email: data.email,
+          username: (data as any).username ?? null,
           fullName: data.full_name,
           role: data.role as UserRole,
           phone: data.phone,
