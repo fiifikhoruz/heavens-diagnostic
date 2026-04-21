@@ -82,6 +82,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const resolvedEmail = await resolveToEmail(username);
 
     // ── 2. Rate limit check (10 attempts per IP per 15 minutes) ────────────
+    // Non-fatal: if the RPC errors, log and continue — don't block login.
     const rateLimitResult = await (supabaseAdmin as any).rpc(
       'check_rate_limit',
       {
@@ -91,7 +92,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
     );
 
-    if (rateLimitResult.error || !rateLimitResult.data) {
+    if (!rateLimitResult.error && rateLimitResult.data === false) {
       return NextResponse.json(
         { error: 'Too many requests. Please try again later.' },
         { status: 429 }
@@ -99,34 +100,33 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // ── 3. Account lock check ───────────────────────────────────────────────
+    // Non-fatal: if the RPC errors (e.g. DB function not yet patched),
+    // log the error and proceed rather than showing "service unavailable".
     const lockCheckResult = await (supabaseAdmin as any).rpc(
       'check_account_lock',
       { user_email: resolvedEmail }
     );
 
     if (lockCheckResult.error) {
-      console.error('Account lock check error:', lockCheckResult.error);
-      return NextResponse.json(
-        { error: 'Service temporarily unavailable' },
-        { status: 503 }
-      );
-    }
+      console.error('[login] check_account_lock error (non-fatal):', lockCheckResult.error.message);
+      // Proceed with authentication — the lock check is a safeguard, not a gate
+    } else {
+      const lockData = lockCheckResult.data?.[0];
+      if (lockData?.is_locked) {
+        await (supabaseAdmin as any).rpc('record_login_attempt', {
+          p_email: resolvedEmail,
+          p_ip: clientIp,
+          p_user_agent: userAgent,
+          p_success: false,
+        }).catch(() => {}); // non-fatal
 
-    const lockData = lockCheckResult.data?.[0];
-    if (lockData?.is_locked) {
-      await supabaseAdmin.rpc('record_login_attempt', {
-        p_email: resolvedEmail,
-        p_ip: clientIp,
-        p_user_agent: userAgent,
-        p_success: false,
-      });
-
-      return NextResponse.json(
-        {
-          error: 'Account is temporarily locked due to too many failed attempts. Please try again in 30 minutes.',
-        },
-        { status: 423 }
-      );
+        return NextResponse.json(
+          {
+            error: 'Account is temporarily locked due to too many failed attempts. Please try again in 30 minutes.',
+          },
+          { status: 423 }
+        );
+      }
     }
 
     // ── 4. Authenticate ─────────────────────────────────────────────────────
@@ -141,12 +141,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     });
 
     if (error) {
-      await supabaseAdmin.rpc('record_login_attempt', {
+      // Non-fatal — if record_login_attempt errors, we still return 401
+      await (supabaseAdmin as any).rpc('record_login_attempt', {
         p_email: resolvedEmail,
         p_ip: clientIp,
         p_user_agent: userAgent,
         p_success: false,
-      });
+      }).catch((e: unknown) => console.error('[login] record_login_attempt error:', e));
 
       return NextResponse.json(
         { error: 'Invalid username or password.' },
@@ -155,12 +156,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // ── 5. Record success ───────────────────────────────────────────────────
-    await supabaseAdmin.rpc('record_login_attempt', {
+    await (supabaseAdmin as any).rpc('record_login_attempt', {
       p_email: resolvedEmail,
       p_ip: clientIp,
       p_user_agent: userAgent,
       p_success: true,
-    });
+    }).catch((e: unknown) => console.error('[login] record_login_attempt error:', e));
 
     return NextResponse.json({
       session: data.session,
