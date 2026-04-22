@@ -111,16 +111,16 @@ export async function POST(request: NextRequest) {
     const { error: profileError } = await adminClient
       .from('profiles')
       .upsert(
+        // Note: profiles has no email column — do not include it
         {
           id: newUserId,
-          email: internalEmail,
           username: normalizedUsername,
           full_name: fullName?.trim() || null,
           role,
           is_active: true,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-        },
+        } as any,
         { onConflict: 'id' }
       );
 

@@ -4,19 +4,34 @@ import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import { Database } from '@/lib/supabase/database.types';
 
+const USERNAME_RE = /^[a-z0-9_-]{3,30}$/;
+const VALID_ROLES = ['front_desk', 'technician', 'doctor', 'admin'];
+
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  'https://heavens-diagnostic-qjvm-three.vercel.app';
+
 export async function POST(request: NextRequest) {
   try {
-    const { email, role, fullName } = await request.json();
+    const { email, username, fullName, role } = await request.json();
 
-    // ── 1. Validate inputs ──────────────────────────────────────────────────
-    if (!email || typeof email !== 'string') {
-      return NextResponse.json({ error: 'Email is required' }, { status: 400 });
+    // ── 1. Validate ─────────────────────────────────────────────────────────
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return NextResponse.json({ error: 'A valid email address is required.' }, { status: 400 });
     }
-    if (!role || !['front_desk', 'technician', 'doctor', 'admin'].includes(role)) {
-      return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
+    if (!username || !USERNAME_RE.test(username.toLowerCase())) {
+      return NextResponse.json(
+        { error: 'Username must be 3–30 characters: letters, numbers, underscores or hyphens.' },
+        { status: 400 }
+      );
+    }
+    if (!role || !VALID_ROLES.includes(role)) {
+      return NextResponse.json({ error: 'Invalid role.' }, { status: 400 });
     }
 
-    // ── 2. Verify caller is an authenticated admin ──────────────────────────
+    const normalizedUsername = username.trim().toLowerCase();
+
+    // ── 2. Verify caller is an admin ────────────────────────────────────────
     const cookieStore = await cookies();
     const supabaseServer = createServerClient<Database>(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -24,63 +39,61 @@ export async function POST(request: NextRequest) {
       {
         cookies: {
           getAll() { return cookieStore.getAll(); },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) =>
-                cookieStore.set(name, value, options as any)
-              );
-            } catch { /* ignored in server context */ }
+          setAll(list) {
+            try { list.forEach(({ name, value, options }) => cookieStore.set(name, value, options as any)); }
+            catch { /* ignored */ }
           },
         },
       }
     );
 
-    const { data: { user: callerUser } } = await supabaseServer.auth.getUser();
-    if (!callerUser) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const { data: { user: caller } } = await supabaseServer.auth.getUser();
+    if (!caller) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
 
     const { data: callerProfile } = await supabaseServer
-      .from('profiles')
-      .select('role')
-      .eq('id', callerUser.id)
-      .single();
-
-    if (!callerProfile || callerProfile.role !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden — admin only' }, { status: 403 });
+      .from('profiles').select('role').eq('id', caller.id).single();
+    if (callerProfile?.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden — admin only.' }, { status: 403 });
     }
 
-    // ── 3. Use service-role admin client to send the invite ─────────────────
     const adminClient = createAdminClient();
 
+    // ── 3. Check username is not taken ──────────────────────────────────────
+    const { data: existing } = await (adminClient as any)
+      .from('profiles').select('id').ilike('username', normalizedUsername).maybeSingle();
+    if (existing) {
+      return NextResponse.json(
+        { error: `Username "@${normalizedUsername}" is already taken.` },
+        { status: 409 }
+      );
+    }
+
+    // ── 4. Send Supabase invite email ───────────────────────────────────────
+    // The link takes the user to /api/auth/callback which sets the session,
+    // then redirects to /dashboard/set-password.
     const { data: inviteData, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(
-      email.toLowerCase().trim(),
+      email.trim().toLowerCase(),
       {
-        data: { role, full_name: fullName || '' },
-        redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://heavens-diagnostic-qjvm-three.vercel.app'}/api/auth/callback?next=/dashboard/set-password`,
+        data: { username: normalizedUsername, full_name: fullName?.trim() || null, role },
+        redirectTo: `${SITE_URL}/api/auth/callback?next=/dashboard/set-password`,
       }
     );
 
     if (inviteError) {
-      // Supabase returns 422 if email already exists / already invited
-      return NextResponse.json(
-        { error: inviteError.message },
-        { status: 422 }
-      );
+      return NextResponse.json({ error: inviteError.message }, { status: 422 });
     }
 
     const newUserId = inviteData.user.id;
 
-    // ── 4. Pre-create the profile row with the assigned role ────────────────
-    // This makes the user appear in the admin list immediately, even before
-    // they accept the invite and set their password.
-    const { error: profileError } = await adminClient
+    // ── 5. Pre-create profile with username + role ──────────────────────────
+    // Note: profiles does NOT have an email column — don't include it.
+    const { error: profileError } = await (adminClient as any)
       .from('profiles')
       .upsert(
         {
           id: newUserId,
-          email: email.toLowerCase().trim(),
-          full_name: fullName || null,
+          username: normalizedUsername,
+          full_name: fullName?.trim() || null,
           role,
           is_active: true,
           created_at: new Date().toISOString(),
@@ -90,29 +103,26 @@ export async function POST(request: NextRequest) {
       );
 
     if (profileError) {
-      // Non-fatal — profile trigger may have already created it
       console.warn('[invite] Profile upsert warning:', profileError.message);
+      // Non-fatal — user still gets the invite email and can log in.
+      // Profile will be created/fixed when they land on set-password.
     }
 
-    // ── 5. Log the admin action ─────────────────────────────────────────────
+    // ── 6. Log the action ───────────────────────────────────────────────────
     await (supabaseServer as any).from('admin_activity_log').insert({
-      admin_id: callerUser.id,
+      admin_id: caller.id,
       action: 'INVITE_USER',
       target_type: 'profiles',
       target_id: newUserId,
-      details: { email, role, full_name: fullName || null },
-    });
+      details: { email: email.trim().toLowerCase(), username: normalizedUsername, role },
+    }).catch(() => {});
 
     return NextResponse.json({
       success: true,
-      message: `Invite sent to ${email}`,
-      userId: newUserId,
+      message: `Invite sent to ${email.trim()}. They'll receive an email to set their password.`,
     });
   } catch (err) {
-    console.error('[invite] Unexpected error:', err);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    console.error('[invite]', err);
+    return NextResponse.json({ error: 'Internal server error.' }, { status: 500 });
   }
 }
