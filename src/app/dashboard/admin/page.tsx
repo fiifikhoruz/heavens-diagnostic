@@ -25,6 +25,8 @@ export default function AdminPage() {
   const [inviteRole, setInviteRole] = useState<UserRole>(UserRole.FRONT_DESK);
   const [isInviting, setIsInviting] = useState(false);
   const [inviteSuccess, setInviteSuccess] = useState('');
+  const [inviteLink, setInviteLink] = useState('');
+  const [linkCopied, setLinkCopied] = useState(false);
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -112,6 +114,8 @@ export default function AdminPage() {
     e.preventDefault();
     setError('');
     setInviteSuccess('');
+    setInviteLink('');
+    setLinkCopied(false);
     setIsInviting(true);
 
     try {
@@ -129,20 +133,31 @@ export default function AdminPage() {
       const json = await res.json();
 
       if (!res.ok) {
-        setError(json.error || 'Failed to send invite.');
+        setError(json.error || 'Failed to create invite.');
         return;
       }
 
       setInviteSuccess(json.message);
+      if (json.inviteLink) setInviteLink(json.inviteLink);
       setInviteEmail('');
       setInviteUsername('');
       setInviteFullName('');
       setInviteRole(UserRole.FRONT_DESK);
       await fetchData();
     } catch (err) {
-      setError('Network error — could not send invite.');
+      setError('Network error — could not create invite.');
     } finally {
       setIsInviting(false);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2500);
+    } catch {
+      // Fallback: select the text in the input
     }
   };
 
@@ -217,13 +232,38 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* Success Message */}
+      {/* Success + Invite Link */}
       {inviteSuccess && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-green-800 text-sm flex items-start gap-3">
-          <svg className="w-5 h-5 text-green-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span>{inviteSuccess}</span>
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-green-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="text-green-800 text-sm">{inviteSuccess}</span>
+          </div>
+          {inviteLink && (
+            <div>
+              <p className="text-xs font-medium text-green-700 mb-1.5">Share this invite link with them — expires in 24 hours:</p>
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={inviteLink}
+                  className="flex-1 text-xs font-mono bg-white border border-green-300 rounded px-3 py-2 text-gray-700 select-all"
+                  onFocus={e => e.target.select()}
+                />
+                <button
+                  onClick={handleCopyLink}
+                  className={`shrink-0 px-3 py-2 rounded text-xs font-medium transition ${
+                    linkCopied
+                      ? 'bg-green-600 text-white'
+                      : 'bg-white border border-green-300 text-green-700 hover:bg-green-100'
+                  }`}
+                >
+                  {linkCopied ? '✓ Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -266,7 +306,7 @@ export default function AdminPage() {
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">Invite Staff Member</h2>
             <p className="text-sm text-gray-500 mb-4">
-              They'll receive an email with a link to set their own password. Their username is what they'll use to log in.
+              Creates an account and generates a one-time invite link (valid 24 hours). Share the link with the staff member so they can set their own password. Their username is what they'll use to log in.
             </p>
             <form onSubmit={handleInviteUser} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -362,9 +402,9 @@ export default function AdminPage() {
                   ) : (
                     <>
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                       </svg>
-                      Send Invite
+                      Generate Invite Link
                     </>
                   )}
                 </button>

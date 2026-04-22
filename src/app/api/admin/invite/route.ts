@@ -3,6 +3,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import { Database } from '@/lib/supabase/database.types';
+import crypto from 'crypto';
 
 const USERNAME_RE = /^[a-z0-9_-]{3,30}$/;
 const VALID_ROLES = ['front_desk', 'technician', 'doctor', 'admin'];
@@ -30,6 +31,7 @@ export async function POST(request: NextRequest) {
     }
 
     const normalizedUsername = username.trim().toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase();
 
     // ── 2. Verify caller is an admin ────────────────────────────────────────
     const cookieStore = await cookies();
@@ -68,25 +70,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── 4. Send Supabase invite email ───────────────────────────────────────
-    // The link takes the user to /api/auth/callback which sets the session,
-    // then redirects to /dashboard/set-password.
-    const { data: inviteData, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(
-      email.trim().toLowerCase(),
-      {
-        data: { username: normalizedUsername, full_name: fullName?.trim() || null, role },
-        redirectTo: `${SITE_URL}/api/auth/callback?next=/dashboard/set-password`,
-      }
-    );
+    // ── 4. Create the auth user WITHOUT a password ──────────────────────────
+    // email_confirm: true skips the confirmation email from Supabase.
+    // The user has no password yet — they'll set it via the invite link.
+    const { data: newAuthUser, error: createError } = await adminClient.auth.admin.createUser({
+      email: normalizedEmail,
+      email_confirm: true,
+      user_metadata: {
+        username: normalizedUsername,
+        full_name: fullName?.trim() || null,
+        role,
+      },
+    });
 
-    if (inviteError) {
-      return NextResponse.json({ error: inviteError.message }, { status: 422 });
+    if (createError) {
+      return NextResponse.json({ error: createError.message }, { status: 422 });
     }
 
-    const newUserId = inviteData.user.id;
+    const newUserId = newAuthUser.user.id;
 
     // ── 5. Pre-create profile with username + role ──────────────────────────
-    // Note: profiles does NOT have an email column — don't include it.
     const { error: profileError } = await (adminClient as any)
       .from('profiles')
       .upsert(
@@ -103,23 +106,48 @@ export async function POST(request: NextRequest) {
       );
 
     if (profileError) {
+      // Non-fatal — log but don't block invite
       console.warn('[invite] Profile upsert warning:', profileError.message);
-      // Non-fatal — user still gets the invite email and can log in.
-      // Profile will be created/fixed when they land on set-password.
     }
 
-    // ── 6. Log the action ───────────────────────────────────────────────────
+    // ── 6. Generate a cryptographically secure one-time token ───────────────
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    const { error: inviteError } = await (adminClient as any)
+      .from('invites')
+      .insert({
+        user_id: newUserId,
+        token,
+        expires_at: expiresAt.toISOString(),
+        used: false,
+      });
+
+    if (inviteError) {
+      // Roll back the auth user if we can't store the invite
+      await adminClient.auth.admin.deleteUser(newUserId);
+      return NextResponse.json(
+        { error: `Failed to create invite token: ${inviteError.message}` },
+        { status: 500 }
+      );
+    }
+
+    // ── 7. Build the invite link ─────────────────────────────────────────────
+    const inviteLink = `${SITE_URL}/set-password?token=${token}`;
+
+    // ── 8. Log the action ───────────────────────────────────────────────────
     await (supabaseServer as any).from('admin_activity_log').insert({
       admin_id: caller.id,
       action: 'INVITE_USER',
       target_type: 'profiles',
       target_id: newUserId,
-      details: { email: email.trim().toLowerCase(), username: normalizedUsername, role },
+      details: { email: normalizedEmail, username: normalizedUsername, role },
     }).catch(() => {});
 
     return NextResponse.json({
       success: true,
-      message: `Invite sent to ${email.trim()}. They'll receive an email to set their password.`,
+      message: `Account created for @${normalizedUsername}. Share the invite link below — it expires in 24 hours.`,
+      inviteLink,
     });
   } catch (err) {
     console.error('[invite]', err);
