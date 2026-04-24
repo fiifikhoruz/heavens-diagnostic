@@ -140,6 +140,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 5. Upsert profile ────────────────────────────────────────────────────
+    // This is FATAL — without a profile row with username set, login breaks.
     const { error: upsertErr } = await (adminClient as any)
       .from('profiles')
       .upsert(
@@ -156,8 +157,12 @@ export async function POST(request: NextRequest) {
       );
 
     if (upsertErr) {
-      console.error('[invite] profile upsert error:', upsertErr.message);
-      // Non-fatal — continue
+      // Roll back — a user without a profile can never log in
+      await adminClient.auth.admin.deleteUser(userId).catch(() => {});
+      return NextResponse.json(
+        { error: `Failed to set up staff profile: ${upsertErr.message}` },
+        { status: 500 }
+      );
     }
 
     // ── 6. Void any previous unused tokens for this user ────────────────────
