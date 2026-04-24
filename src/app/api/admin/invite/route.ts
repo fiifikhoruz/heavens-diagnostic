@@ -14,12 +14,9 @@ const SITE_URL =
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, username, fullName, role } = await request.json();
+    const { username, fullName, role } = await request.json();
 
     // ── 1. Validate ─────────────────────────────────────────────────────────
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
-      return NextResponse.json({ error: 'A valid email address is required.' }, { status: 400 });
-    }
     if (!username || !USERNAME_RE.test(username.toLowerCase())) {
       return NextResponse.json(
         { error: 'Username must be 3–30 characters: letters, numbers, underscores or hyphens.' },
@@ -31,7 +28,9 @@ export async function POST(request: NextRequest) {
     }
 
     const normalizedUsername = username.trim().toLowerCase();
-    const normalizedEmail = email.trim().toLowerCase();
+
+    // Internal email — users never see this. Same pattern as create-user.
+    const internalEmail = `${normalizedUsername}@staff.heavens`;
 
     // ── 2. Verify caller is an admin ────────────────────────────────────────
     const cookieStore = await cookies();
@@ -71,10 +70,10 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 4. Create the auth user WITHOUT a password ──────────────────────────
-    // email_confirm: true skips the confirmation email from Supabase.
-    // The user has no password yet — they'll set it via the invite link.
+    // Uses internal email — staff never see or need it.
+    // email_confirm: true skips any Supabase confirmation email.
     const { data: newAuthUser, error: createError } = await adminClient.auth.admin.createUser({
-      email: normalizedEmail,
+      email: internalEmail,
       email_confirm: true,
       user_metadata: {
         username: normalizedUsername,
@@ -106,7 +105,6 @@ export async function POST(request: NextRequest) {
       );
 
     if (profileError) {
-      // Non-fatal — log but don't block invite
       console.warn('[invite] Profile upsert warning:', profileError.message);
     }
 
@@ -141,7 +139,7 @@ export async function POST(request: NextRequest) {
       action: 'INVITE_USER',
       target_type: 'profiles',
       target_id: newUserId,
-      details: { email: normalizedEmail, username: normalizedUsername, role },
+      details: { username: normalizedUsername, role },
     }).catch(() => {});
 
     return NextResponse.json({

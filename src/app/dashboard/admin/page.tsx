@@ -19,7 +19,6 @@ export default function AdminPage() {
   const [error, setError] = useState('');
 
   // Invite form
-  const [inviteEmail, setInviteEmail] = useState('');
   const [inviteUsername, setInviteUsername] = useState('');
   const [inviteFullName, setInviteFullName] = useState('');
   const [inviteRole, setInviteRole] = useState<UserRole>(UserRole.FRONT_DESK);
@@ -123,7 +122,6 @@ export default function AdminPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: inviteEmail.trim(),
           username: inviteUsername.trim().toLowerCase(),
           fullName: inviteFullName.trim() || undefined,
           role: inviteRole,
@@ -139,7 +137,6 @@ export default function AdminPage() {
 
       setInviteSuccess(json.message);
       if (json.inviteLink) setInviteLink(json.inviteLink);
-      setInviteEmail('');
       setInviteUsername('');
       setInviteFullName('');
       setInviteRole(UserRole.FRONT_DESK);
@@ -310,23 +307,6 @@ export default function AdminPage() {
             </p>
             <form onSubmit={handleInviteUser} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Email */}
-                <div>
-                  <label htmlFor="inviteEmail" className="block text-sm font-medium text-gray-700 mb-1">
-                    Email Address
-                  </label>
-                  <input
-                    id="inviteEmail"
-                    type="email"
-                    value={inviteEmail}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setInviteEmail(e.target.value)}
-                    required
-                    disabled={isInviting}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition disabled:bg-gray-100"
-                    placeholder="staff@example.com"
-                  />
-                </div>
-
                 {/* Username */}
                 <div>
                   <label htmlFor="inviteUsername" className="block text-sm font-medium text-gray-700 mb-1">
