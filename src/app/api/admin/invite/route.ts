@@ -28,8 +28,6 @@ export async function POST(request: NextRequest) {
     }
 
     const normalizedUsername = username.trim().toLowerCase();
-
-    // Internal email — users never see this. Same pattern as create-user.
     const internalEmail = `${normalizedUsername}@staff.heavens`;
 
     // ── 2. Verify caller is an admin ────────────────────────────────────────
@@ -59,19 +57,22 @@ export async function POST(request: NextRequest) {
 
     const adminClient = createAdminClient();
 
-    // ── 3. Check username is not taken ──────────────────────────────────────
-    const { data: existing } = await (adminClient as any)
+    // ── 3. Check username is not taken in profiles ───────────────────────────
+    const { data: existingProfile } = await (adminClient as any)
       .from('profiles').select('id').ilike('username', normalizedUsername).maybeSingle();
-    if (existing) {
+    if (existingProfile) {
       return NextResponse.json(
         { error: `Username "@${normalizedUsername}" is already taken.` },
         { status: 409 }
       );
     }
 
-    // ── 4. Create the auth user WITHOUT a password ──────────────────────────
-    // Uses internal email — staff never see or need it.
-    // email_confirm: true skips any Supabase confirmation email.
+    // ── 4. Resolve auth user — create or recover orphaned one ────────────────
+    // The internal email may already exist if a previous invite attempt partially
+    // succeeded (auth user created, but profile or token was never stored).
+    // In that case we recover the existing user rather than failing.
+    let userId: string;
+
     const { data: newAuthUser, error: createError } = await adminClient.auth.admin.createUser({
       email: internalEmail,
       email_confirm: true,
@@ -83,17 +84,48 @@ export async function POST(request: NextRequest) {
     });
 
     if (createError) {
-      return NextResponse.json({ error: createError.message }, { status: 422 });
+      const alreadyExists =
+        createError.message.toLowerCase().includes('already been registered') ||
+        createError.message.toLowerCase().includes('already registered') ||
+        createError.message.toLowerCase().includes('already exists');
+
+      if (!alreadyExists) {
+        return NextResponse.json({ error: createError.message }, { status: 422 });
+      }
+
+      // Recover: find the orphaned auth user by scanning (small user base — safe)
+      const { data: { users: allUsers } } = await adminClient.auth.admin.listUsers({
+        perPage: 1000,
+      });
+      const orphan = allUsers.find(u => u.email === internalEmail);
+
+      if (!orphan) {
+        return NextResponse.json(
+          { error: 'Account conflict — please try a different username.' },
+          { status: 409 }
+        );
+      }
+
+      // Update their metadata to match the current request
+      await adminClient.auth.admin.updateUserById(orphan.id, {
+        user_metadata: {
+          username: normalizedUsername,
+          full_name: fullName?.trim() || null,
+          role,
+        },
+      });
+
+      userId = orphan.id;
+    } else {
+      userId = newAuthUser.user.id;
     }
 
-    const newUserId = newAuthUser.user.id;
-
-    // ── 5. Pre-create profile with username + role ──────────────────────────
-    const { error: profileError } = await (adminClient as any)
+    // ── 5. Upsert profile ────────────────────────────────────────────────────
+    await (adminClient as any)
       .from('profiles')
       .upsert(
         {
-          id: newUserId,
+          id: userId,
           username: normalizedUsername,
           full_name: fullName?.trim() || null,
           role,
@@ -104,41 +136,42 @@ export async function POST(request: NextRequest) {
         { onConflict: 'id' }
       );
 
-    if (profileError) {
-      console.warn('[invite] Profile upsert warning:', profileError.message);
-    }
+    // ── 6. Invalidate any previous unused tokens for this user ───────────────
+    await (adminClient as any)
+      .from('invites')
+      .update({ used: true })
+      .eq('user_id', userId)
+      .eq('used', false);
 
-    // ── 6. Generate a cryptographically secure one-time token ───────────────
+    // ── 7. Generate a fresh one-time token ───────────────────────────────────
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     const { error: inviteError } = await (adminClient as any)
       .from('invites')
       .insert({
-        user_id: newUserId,
+        user_id: userId,
         token,
         expires_at: expiresAt.toISOString(),
         used: false,
       });
 
     if (inviteError) {
-      // Roll back the auth user if we can't store the invite
-      await adminClient.auth.admin.deleteUser(newUserId);
       return NextResponse.json(
         { error: `Failed to create invite token: ${inviteError.message}` },
         { status: 500 }
       );
     }
 
-    // ── 7. Build the invite link ─────────────────────────────────────────────
+    // ── 8. Build the invite link ─────────────────────────────────────────────
     const inviteLink = `${SITE_URL}/set-password?token=${token}`;
 
-    // ── 8. Log the action ───────────────────────────────────────────────────
+    // ── 9. Log the action ────────────────────────────────────────────────────
     await (supabaseServer as any).from('admin_activity_log').insert({
       admin_id: caller.id,
       action: 'INVITE_USER',
       target_type: 'profiles',
-      target_id: newUserId,
+      target_id: userId,
       details: { username: normalizedUsername, role },
     }).catch(() => {});
 
