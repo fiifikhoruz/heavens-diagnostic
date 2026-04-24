@@ -190,13 +190,15 @@ export async function POST(request: NextRequest) {
     // ── 8. Build link and log ─────────────────────────────────────────────────
     const inviteLink = `${SITE_URL}/set-password?token=${token}`;
 
-    await (supabaseServer as any).from('admin_activity_log').insert({
-      admin_id: caller.id,
-      action: 'INVITE_USER',
-      target_type: 'profiles',
-      target_id: userId,
-      details: { username: normalizedUsername, role },
-    }).catch(() => {});
+    try {
+      await (supabaseServer as any).from('admin_activity_log').insert({
+        admin_id: caller.id,
+        action: 'INVITE_USER',
+        target_type: 'profiles',
+        target_id: userId,
+        details: { username: normalizedUsername, role },
+      });
+    } catch { /* non-fatal — don't block the invite */ }
 
     return NextResponse.json({
       success: true,
