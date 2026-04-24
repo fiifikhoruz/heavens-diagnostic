@@ -22,6 +22,8 @@ interface FormData {
   postalCode: string;
   emergencyContactName: string;
   emergencyContactPhone: string;
+  insuranceProvider: string;
+  insuranceId: string;
 }
 
 export default function NewPatientPage() {
@@ -41,6 +43,8 @@ export default function NewPatientPage() {
     postalCode: '',
     emergencyContactName: '',
     emergencyContactPhone: '',
+    insuranceProvider: '',
+    insuranceId: '',
   });
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -108,6 +112,8 @@ export default function NewPatientPage() {
       postal_code: formData.postalCode || null,
       emergency_contact_name: formData.emergencyContactName || null,
       emergency_contact_phone: formData.emergencyContactPhone || null,
+      insurance_provider: formData.insuranceProvider || null,
+      insurance_id: formData.insuranceId || null,
       is_active: true,
       created_by: authData.user.id,
       created_at: now,
@@ -132,6 +138,8 @@ export default function NewPatientPage() {
           postalCode: formData.postalCode || null,
           emergencyContactName: formData.emergencyContactName || null,
           emergencyContactPhone: formData.emergencyContactPhone || null,
+          insuranceProvider: formData.insuranceProvider || null,
+          insuranceId: formData.insuranceId || null,
           createdAt: now,
           updatedAt: now,
           synced: false,
@@ -166,6 +174,8 @@ export default function NewPatientPage() {
               state: formData.state || null, postalCode: formData.postalCode || null,
               emergencyContactName: formData.emergencyContactName || null,
               emergencyContactPhone: formData.emergencyContactPhone || null,
+              insuranceProvider: formData.insuranceProvider || null,
+              insuranceId: formData.insuranceId || null,
               createdAt: now, updatedAt: now, synced: false,
             });
             await enqueueAction('CREATE_PATIENT', payload);
@@ -211,7 +221,7 @@ export default function NewPatientPage() {
           </p>
           <div className="flex gap-3 justify-center">
             <button
-              onClick={() => { setSavedOffline(false); setFormData({ firstName: '', lastName: '', dateOfBirth: '', gender: Gender.OTHER, phone: '', email: '', address: '', city: '', state: '', postalCode: '', emergencyContactName: '', emergencyContactPhone: '' }); }}
+              onClick={() => { setSavedOffline(false); setFormData({ firstName: '', lastName: '', dateOfBirth: '', gender: Gender.OTHER, phone: '', email: '', address: '', city: '', state: '', postalCode: '', emergencyContactName: '', emergencyContactPhone: '', insuranceProvider: '', insuranceId: '' }); }}
               className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-6 rounded-lg transition"
             >
               Register Another
@@ -329,6 +339,38 @@ export default function NewPatientPage() {
               <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
               <input name="emergencyContactPhone" type="tel" value={formData.emergencyContactPhone} onChange={handleChange} disabled={isLoading}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition disabled:bg-gray-100" />
+            </div>
+          </div>
+        </div>
+
+        {/* Insurance */}
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-1">Insurance</h2>
+          <p className="text-sm text-gray-500 mb-4">Optional — fill in if the patient has NHIS or private cover.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Insurance Provider</label>
+              <input
+                name="insuranceProvider"
+                type="text"
+                value={formData.insuranceProvider}
+                onChange={handleChange}
+                disabled={isLoading}
+                placeholder="e.g. NHIS, Enterprise Life"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition disabled:bg-gray-100"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Insurance / NHIS ID</label>
+              <input
+                name="insuranceId"
+                type="text"
+                value={formData.insuranceId}
+                onChange={handleChange}
+                disabled={isLoading}
+                placeholder="e.g. GHA-123456789-0"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition disabled:bg-gray-100"
+              />
             </div>
           </div>
         </div>

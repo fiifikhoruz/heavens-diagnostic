@@ -16,6 +16,8 @@ export interface LocalPatient {
   postalCode: string | null;
   emergencyContactName: string | null;
   emergencyContactPhone: string | null;
+  insuranceProvider: string | null;
+  insuranceId: string | null;
   createdAt: string;
   updatedAt: string;    // used for conflict resolution
   synced: boolean;      // false = pending sync
