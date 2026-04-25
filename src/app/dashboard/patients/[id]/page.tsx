@@ -128,6 +128,7 @@ export default function PatientProfilePage() {
   const [testResults, setTestResults] = useState<TestResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchPatientData = async () => {
@@ -138,6 +139,14 @@ export default function PatientProfilePage() {
           setLoading(false);
           return;
         }
+
+        // Fetch role for edit button visibility
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+        if (profileData) setUserRole(profileData.role);
 
         // Fetch patient data
         const { data: patientData, error: patientError } = await supabase
@@ -289,7 +298,7 @@ export default function PatientProfilePage() {
             </h1>
             <p className="text-gray-600">Patient ID: {patient.patient_id}</p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex gap-3 print:hidden">
             <Link
               href={`/dashboard/visits/new?patientId=${patientId}`}
               className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium transition"
@@ -410,15 +419,17 @@ export default function PatientProfilePage() {
               </div>
             )}
 
-            <div className="mt-6 pt-6 border-t">
-              <button
-                onClick={() => alert('Edit patient feature coming soon')}
-                className="inline-flex items-center gap-2 text-green-600 hover:text-green-700 font-medium"
-              >
-                Edit Patient Information
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
+            {(userRole === 'front_desk' || userRole === 'admin') && (
+              <div className="mt-6 pt-6 border-t print:hidden">
+                <Link
+                  href={`/dashboard/patients/${patientId}/edit`}
+                  className="inline-flex items-center gap-2 text-green-600 hover:text-green-700 font-medium"
+                >
+                  Edit Patient Information
+                  <ChevronRight className="w-4 h-4" />
+                </Link>
+              </div>
+            )}
           </div>
         </div>
 

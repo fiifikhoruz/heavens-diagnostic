@@ -314,6 +314,7 @@ export default function DashboardLayout({
         {/* Sidebar */}
         <aside
           className={`
+            print:hidden
             ${isMobile
               ? `fixed inset-y-0 left-0 z-50 w-72 transform transition-transform duration-300
                  ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
@@ -409,7 +410,7 @@ export default function DashboardLayout({
         {/* Main Content */}
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* Top Bar */}
-          <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+          <header className="print:hidden bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
             {/* Hamburger — mobile only */}
             {isMobile && (
               <button
