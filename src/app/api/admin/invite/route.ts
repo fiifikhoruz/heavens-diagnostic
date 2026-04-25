@@ -140,7 +140,9 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 5. Upsert profile ────────────────────────────────────────────────────
-    // This is FATAL — without a profile row with username set, login breaks.
+    // FATAL — without a profile row with username set, login breaks.
+    // Do NOT include is_active or created_at — they have DB defaults and
+    // PostgREST schema cache sometimes doesn't recognise them, causing a crash.
     const { error: upsertErr } = await (adminClient as any)
       .from('profiles')
       .upsert(
@@ -149,8 +151,6 @@ export async function POST(request: NextRequest) {
           username: normalizedUsername,
           full_name: fullName?.trim() || null,
           role,
-          is_active: true,
-          created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'id' }

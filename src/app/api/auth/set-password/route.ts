@@ -72,9 +72,19 @@ export async function POST(request: NextRequest) {
       .update({ updated_at: new Date().toISOString() })
       .eq('id', invite.user_id);
 
+    // ── 7. Fetch the user's internal email so the client can auto-sign-in ───
+    // The internal email ({username}@staff.heavens) is needed for signInWithPassword.
+    // It's safe to return it here — the caller already proved they own the invite token.
+    let autoLoginEmail: string | null = null;
+    try {
+      const { data: userData } = await adminClient.auth.admin.getUserById(invite.user_id);
+      autoLoginEmail = userData?.user?.email ?? null;
+    } catch { /* non-fatal — client will fall back to /login */ }
+
     return NextResponse.json({
       success: true,
-      message: 'Password set successfully. You can now log in.',
+      message: 'Password set successfully.',
+      autoLoginEmail,
     });
   } catch (err) {
     console.error('[set-password] Unexpected error:', err);

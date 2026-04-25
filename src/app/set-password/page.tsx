@@ -2,6 +2,7 @@
 
 import { useState, FormEvent, ChangeEvent, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { createClient } from '@/lib/supabase/client';
 
 function SetPasswordForm() {
   const router = useRouter();
@@ -14,6 +15,7 @@ function SetPasswordForm() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
 
   // If there's no token in the URL, show an error immediately
   useEffect(() => {
@@ -52,8 +54,25 @@ function SetPasswordForm() {
         return;
       }
 
-      // Success — show confirmation then redirect to login
+      // Password set — attempt auto-login so user goes straight to the dashboard
       setSuccess(true);
+
+      if (data.autoLoginEmail) {
+        setSigningIn(true);
+        try {
+          const supabase = createClient();
+          const { error: signInError } = await supabase.auth.signInWithPassword({
+            email: data.autoLoginEmail,
+            password,
+          });
+          if (!signInError) {
+            router.replace('/dashboard');
+            return;
+          }
+        } catch { /* fall through to /login */ }
+      }
+
+      // Fallback — couldn't auto-sign-in; redirect to login page
       setTimeout(() => router.push('/login'), 2500);
     } catch {
       setError('Network error. Please check your connection and try again.');
@@ -66,12 +85,21 @@ function SetPasswordForm() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
         <div className="w-full max-w-md bg-white rounded-lg shadow-lg p-8 text-center">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-green-100 rounded-full mb-4">
-            <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
+            {signingIn ? (
+              <svg className="animate-spin w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
           </div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Password Set!</h1>
-          <p className="text-gray-500 text-sm">Your account is ready. Taking you to the login page…</p>
+          <p className="text-gray-500 text-sm">
+            {signingIn ? 'Signing you in…' : 'Your account is ready. Taking you to the login page…'}
+          </p>
         </div>
       </div>
     );

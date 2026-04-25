@@ -117,8 +117,6 @@ export async function POST(request: NextRequest) {
           username: normalizedUsername,
           full_name: fullName?.trim() || null,
           role,
-          is_active: true,
-          created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         } as any,
         { onConflict: 'id' }
@@ -134,13 +132,15 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 7. Log the admin action ─────────────────────────────────────────────
-    await (supabaseServer as any).from('admin_activity_log').insert({
-      admin_id: callerUser.id,
-      action: 'CREATE_USER',
-      target_type: 'profiles',
-      target_id: newUserId,
-      details: { username: normalizedUsername, role, full_name: fullName?.trim() || null },
-    });
+    try {
+      await (supabaseServer as any).from('admin_activity_log').insert({
+        admin_id: callerUser.id,
+        action: 'CREATE_USER',
+        target_type: 'profiles',
+        target_id: newUserId,
+        details: { username: normalizedUsername, role, full_name: fullName?.trim() || null },
+      });
+    } catch { /* non-fatal — don't block the response */ }
 
     return NextResponse.json({
       success: true,
