@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { Patient, TestType, SampleType, TestTemplate, TestTemplateField } from '@/lib/types';
 import { useAutoSave } from '@/hooks/useAutoSave';
+import { getLocalDB } from '@/lib/local-db';
 
 interface SelectedTest {
   testTypeId: string;
@@ -43,6 +44,7 @@ export default function NewVisitPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [showRestoreDraft, setShowRestoreDraft] = useState(false);
   const [draftTimestamp, setDraftTimestamp] = useState<string>('');
+  const [unsyncedPatientIds, setUnsyncedPatientIds] = useState<Set<string>>(new Set());
 
   // Get user ID for auto-save
   useEffect(() => {
@@ -92,14 +94,16 @@ export default function NewVisitPage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // Fetch patients
+        // Fetch patients from Supabase
         const { data: patientsData } = await supabase
           .from('patients')
           .select('*')
           .eq('is_active', true);
 
-        if (patientsData) {
-          const mapped: Patient[] = (patientsData as any[]).map(p => ({
+        const syncedIds = new Set<string>();
+        const mapped: Patient[] = (patientsData ?? []).map((p: any) => {
+          syncedIds.add(p.id);
+          return {
             id: p.id,
             patientId: p.patient_id,
             createdAt: p.created_at,
@@ -120,10 +124,47 @@ export default function NewVisitPage() {
             emergencyContactPhone: p.emergency_contact_phone,
             notes: p.notes,
             isActive: p.is_active,
-          }));
-          setPatients(mapped);
-          setFilteredPatients(mapped);
-        }
+          };
+        });
+
+        // Also surface patients saved offline that haven't synced yet
+        // They're shown in the list but blocked from visit creation until synced
+        try {
+          const db = getLocalDB();
+          const localPatients = await db.patients.where('synced').equals(0 as any).toArray();
+          const newUnsyncedIds = new Set<string>();
+          for (const lp of localPatients) {
+            if (!syncedIds.has(lp.id)) {
+              newUnsyncedIds.add(lp.id);
+              mapped.unshift({
+                id: lp.id,
+                patientId: lp.patientId,
+                createdAt: lp.createdAt,
+                updatedAt: lp.updatedAt,
+                firstName: lp.firstName,
+                lastName: lp.lastName,
+                dateOfBirth: lp.dateOfBirth,
+                gender: lp.gender as any,
+                phone: lp.phone,
+                email: lp.email,
+                address: lp.address,
+                city: lp.city,
+                state: lp.state,
+                postalCode: lp.postalCode,
+                insuranceProvider: lp.insuranceProvider ?? null,
+                insuranceId: lp.insuranceId ?? null,
+                emergencyContactName: lp.emergencyContactName,
+                emergencyContactPhone: lp.emergencyContactPhone,
+                notes: null,
+                isActive: true,
+              });
+            }
+          }
+          setUnsyncedPatientIds(newUnsyncedIds);
+        } catch { /* IndexedDB unavailable — skip local patients */ }
+
+        setPatients(mapped);
+        setFilteredPatients(mapped);
 
         // Fetch test types
         const { data: testsData } = await supabase
@@ -285,6 +326,16 @@ export default function NewVisitPage() {
 
       if (selectedTests.length === 0) {
         setError('Please select at least one test');
+        return;
+      }
+
+      // Block visit creation for patients still pending sync to server
+      if (unsyncedPatientIds.has(selectedPatient.id)) {
+        setError(
+          `${selectedPatient.firstName} ${selectedPatient.lastName} was registered offline and hasn't synced yet. ` +
+          'Please wait for sync to complete (check the sync badge in the toolbar), then try again.'
+        );
+        setIsSubmitting(false);
         return;
       }
 
@@ -453,17 +504,27 @@ export default function NewVisitPage() {
             />
             {filteredPatients.length > 0 && searchPatient && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg z-10">
-                {filteredPatients.map(patient => (
-                  <button
-                    key={patient.id}
-                    type="button"
-                    onClick={() => handleSelectPatient(patient)}
-                    className="w-full text-left px-4 py-2 hover:bg-green-50 border-b last:border-b-0"
-                  >
-                    <p className="font-medium text-gray-900">{patient.firstName} {patient.lastName}</p>
-                    <p className="text-sm text-gray-600">{patient.phone || 'No phone'}</p>
-                  </button>
-                ))}
+                {filteredPatients.map(patient => {
+                  const isPending = unsyncedPatientIds.has(patient.id);
+                  return (
+                    <button
+                      key={patient.id}
+                      type="button"
+                      onClick={() => handleSelectPatient(patient)}
+                      className={`w-full text-left px-4 py-2 hover:bg-green-50 border-b last:border-b-0 ${isPending ? 'opacity-75' : ''}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-gray-900">{patient.firstName} {patient.lastName}</p>
+                        {isPending && (
+                          <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium">
+                            Syncing…
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-600">{patient.phone || 'No phone'}</p>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>

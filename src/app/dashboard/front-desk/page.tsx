@@ -118,8 +118,10 @@ export default function FrontDeskDashboard() {
       setVisitsLoading(true);
 
       const today = new Date().toISOString().split('T')[0];
+      // Show last 7 days so visits don't vanish the next morning
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-      // Fetch today's visits
+      // Fetch recent visits (last 7 days)
       const { data: visitsData, error: visitsError } = await supabase
         .from('visits')
         .select(
@@ -132,8 +134,7 @@ export default function FrontDeskDashboard() {
           patients (id, first_name, last_name, phone, patient_id)
         `
         )
-        .gte('visit_date', today)
-        .lt('visit_date', new Date(new Date(today).getTime() + 86400000).toISOString().split('T')[0])
+        .gte('visit_date', sevenDaysAgo)
         .order('visit_date', { ascending: false });
 
       if (visitsError) throw visitsError;
@@ -420,7 +421,7 @@ export default function FrontDeskDashboard() {
         {/* Today's Visits Table */}
         <div className="bg-white rounded-lg shadow mb-8">
           <div className="px-6 py-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900">Today's Visits</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Recent Visits (Last 7 Days)</h2>
           </div>
           {visitsLoading ? (
             <div className="px-6 py-8 text-center text-gray-600">Loading visits...</div>
@@ -493,7 +494,7 @@ export default function FrontDeskDashboard() {
               </table>
             </div>
           ) : (
-            <div className="px-6 py-8 text-center text-gray-600">No visits today</div>
+            <div className="px-6 py-8 text-center text-gray-600">No visits in the last 7 days</div>
           )}
         </div>
 
