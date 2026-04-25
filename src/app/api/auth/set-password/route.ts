@@ -1,6 +1,55 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { NextRequest, NextResponse } from 'next/server';
 
+/**
+ * GET /api/auth/set-password?token=...
+ * Returns the username and full name for a valid (unused, unexpired) invite token.
+ * Does NOT consume the token — safe to call on page load.
+ */
+export async function GET(request: NextRequest) {
+  const token = request.nextUrl.searchParams.get('token');
+
+  if (!token || typeof token !== 'string' || token.length < 10) {
+    return NextResponse.json({ error: 'Invalid token.' }, { status: 400 });
+  }
+
+  try {
+    const adminClient = createAdminClient();
+
+    const { data: invite, error } = await (adminClient as any)
+      .from('invites')
+      .select('user_id, expires_at, used')
+      .eq('token', token)
+      .maybeSingle();
+
+    if (error || !invite) {
+      return NextResponse.json({ error: 'Invite link is invalid.' }, { status: 404 });
+    }
+    if (invite.used) {
+      return NextResponse.json({ error: 'This invite link has already been used.' }, { status: 410 });
+    }
+    if (new Date(invite.expires_at) < new Date()) {
+      return NextResponse.json({ error: 'This invite link has expired.' }, { status: 410 });
+    }
+
+    // Fetch the profile to get username + full_name
+    const { data: profile } = await (adminClient as any)
+      .from('profiles')
+      .select('username, full_name, role')
+      .eq('id', invite.user_id)
+      .maybeSingle();
+
+    return NextResponse.json({
+      username: profile?.username ?? null,
+      fullName: profile?.full_name ?? null,
+      role: profile?.role ?? null,
+    });
+  } catch (err) {
+    console.error('[set-password GET] error:', err);
+    return NextResponse.json({ error: 'Could not look up invite.' }, { status: 500 });
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { token, password } = await request.json();
