@@ -19,32 +19,42 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      // POST to our login API which resolves username → internal email
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password }),
+      const raw = username.trim().toLowerCase();
+
+      // Resolve username → email via the public RPC function.
+      // If the input already contains '@' assume it's an email.
+      let email = raw;
+      if (!raw.includes('@')) {
+        const { data: resolved } = await (supabase as any).rpc(
+          'lookup_email_by_username',
+          { p_username: raw }
+        );
+        if (resolved) email = resolved as string;
+      }
+
+      // Sign in directly — @supabase/ssr handles cookie storage automatically.
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
 
-      const json = await res.json();
-
-      if (!res.ok) {
-        setError(json.error || 'Invalid username or password.');
+      if (signInError) {
+        // Give a friendlier message for the most common case.
+        if (
+          signInError.message.toLowerCase().includes('invalid') ||
+          signInError.message.toLowerCase().includes('credentials')
+        ) {
+          setError('Incorrect username or password. Please try again.');
+        } else {
+          setError(signInError.message);
+        }
         setIsLoading(false);
         return;
       }
 
-      // The API returned a session — set it on the client so Supabase client
-      // picks it up and subsequent client-side calls are authenticated.
-      if (json.session) {
-        await supabase.auth.setSession({
-          access_token: json.session.access_token,
-          refresh_token: json.session.refresh_token,
-        });
-      }
-
       router.push('/dashboard');
-    } catch (err) {
+    } catch (err: any) {
+      console.error('[login]', err);
       setError('An unexpected error occurred. Please try again.');
       setIsLoading(false);
     }
@@ -177,7 +187,13 @@ export default function LoginPage() {
           {/* Footer */}
           <div className="mt-6 pt-6 border-t border-gray-200 text-center">
             <p className="text-gray-600 text-sm">
-              Forgot your username? Contact your <span className="text-green-600 font-medium">administrator</span>
+              Forgot your username? Contact your{' '}
+              <a
+                href="mailto:evans@supremestudios.online"
+                className="text-green-600 font-medium hover:underline"
+              >
+                administrator
+              </a>
             </p>
           </div>
         </div>
