@@ -151,6 +151,7 @@ export async function POST(request: NextRequest) {
           username: normalizedUsername,
           full_name: fullName?.trim() || null,
           role,
+          is_active: true,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'id' }

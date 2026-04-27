@@ -140,9 +140,24 @@ export default function TechnicianQueuePage() {
 
   useEffect(() => {
     fetchQueue({ showSpinner: true });
-    const interval = setInterval(() => fetchQueue(), 10_000);
-    return () => clearInterval(interval);
-  }, [fetchQueue]);
+
+    // Realtime: re-fetch whenever visit_tests or visits change
+    const channel = supabase
+      .channel('technician-queue-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'visit_tests' },
+        () => fetchQueue()
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'visits' },
+        () => fetchQueue()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [fetchQueue, supabase]);
 
   useEffect(() => {
     let filtered = [...queue];
@@ -300,9 +315,15 @@ export default function TechnicianQueuePage() {
 
       if (updateError) {
         setError(`Failed to complete test: ${updateError.message}`);
-      } else {
-        setQueue(prev => prev.filter(item => item.testId !== testId));
+        return;
       }
+
+      // Remove the completed test from local state optimistically.
+      // The DB trigger (trg_advance_visit_on_test_complete) will automatically
+      // set visits.status = 'review' if this was the last pending test —
+      // which the Realtime subscription on the doctor-review page will pick up.
+      setQueue(prev => prev.filter(item => item.testId !== testId));
+
     } catch (err) {
       setError('Failed to complete test');
     } finally {
@@ -356,7 +377,7 @@ export default function TechnicianQueuePage() {
         <h1 className="text-3xl font-bold text-gray-900">Technician Queue</h1>
         <p className="text-gray-600 mt-1">
           {filteredQueue.length} test{filteredQueue.length !== 1 ? 's' : ''} pending processing
-          <span className="ml-2 text-xs text-gray-400">· refreshes every 10s</span>
+          <span className="ml-2 text-xs text-gray-400">· live</span>
         </p>
       </div>
 

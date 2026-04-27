@@ -134,9 +134,25 @@ export default function DoctorReviewPage() {
 
   useEffect(() => {
     fetchReviews({ showSpinner: true });
-    const interval = setInterval(() => fetchReviews(), 10_000);
-    return () => clearInterval(interval);
-  }, [fetchReviews]);
+
+    // Realtime: whenever a visit's status changes (e.g. → 'review' from the
+    // DB trigger), or a test result is added, refresh instantly.
+    const channel = supabase
+      .channel('doctor-review-realtime')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'visits' },
+        () => fetchReviews()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'test_results' },
+        () => fetchReviews()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [fetchReviews, supabase]);
 
   useEffect(() => {
     let filtered = [...reviews];
@@ -230,7 +246,7 @@ export default function DoctorReviewPage() {
               ({reviews.filter(r => r.hasAbnormal).length} with abnormal results)
             </span>
           )}
-          <span className="ml-2 text-xs text-gray-400">· refreshes every 10s</span>
+          <span className="ml-2 text-xs text-gray-400">· live</span>
         </p>
       </div>
 
