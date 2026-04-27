@@ -81,6 +81,7 @@ export default function TechnicianQueuePage() {
           assigned_to,
           status,
           created_at,
+          custom_name,
           visits!inner (
             id,
             status,
@@ -92,7 +93,7 @@ export default function TechnicianQueuePage() {
               phone
             )
           ),
-          test_types!inner (
+          test_types (
             name,
             category,
             turnaround_hours
@@ -121,8 +122,8 @@ export default function TechnicianQueuePage() {
           patientFirstName: t.visits?.patients?.first_name || '',
           patientLastName: t.visits?.patients?.last_name || '',
           patientPhone: t.visits?.patients?.phone || null,
-          testName: t.test_types?.name || '',
-          testCategory: t.test_types?.category || '',
+          testName: t.custom_name || t.test_types?.name || 'Unknown Test',
+          testCategory: t.custom_name ? 'Custom' : (t.test_types?.category || ''),
           paymentStatus: null,
           turnaroundHours: t.test_types?.turnaround_hours || 24,
         }));

@@ -64,6 +64,15 @@ CREATE TRIGGER trg_advance_visit_on_test_complete
 
 -- ── 3. Enable Realtime on the relevant tables ────────────────────────────────
 -- Required for Supabase Realtime postgres_changes subscriptions to work.
-ALTER PUBLICATION supabase_realtime ADD TABLE visit_tests;
-ALTER PUBLICATION supabase_realtime ADD TABLE visits;
-ALTER PUBLICATION supabase_realtime ADD TABLE patients;
+-- Wrapped in DO blocks so they're idempotent (no error if already a member).
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE visit_tests;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE visits;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE patients;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

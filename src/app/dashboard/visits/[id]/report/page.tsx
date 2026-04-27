@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { createClient } from '@/lib/supabase/client';
 
 export default function ReportPage() {
   const params = useParams();
@@ -22,22 +23,19 @@ export default function ReportPage() {
         setLoading(true);
         setError(null);
 
-        // Get the auth token from localStorage or cookie
-        const token = localStorage.getItem('supabase.auth.token') ||
-          document.cookie
-            .split('; ')
-            .find((row) => row.startsWith('sb-'))
-            ?.split('=')[1];
+        // Get the access token from the active Supabase session (works with @supabase/ssr)
+        const supabase = createClient();
+        const { data: { session } } = await supabase.auth.getSession();
 
-        if (!token) {
-          throw new Error('Authentication token not found. Please log in again.');
+        if (!session?.access_token) {
+          throw new Error('Session expired. Please log in again.');
         }
 
         const response = await fetch(
           `/api/reports/${visitId}`,
           {
             headers: {
-              Authorization: `Bearer ${token}`,
+              Authorization: `Bearer ${session.access_token}`,
             },
           }
         );
@@ -110,6 +108,7 @@ export default function ReportPage() {
 
   return (
     <div style={styles.container}>
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       {/* Header */}
       <div style={styles.header}>
         <div style={styles.headerContent}>
@@ -188,7 +187,7 @@ export default function ReportPage() {
             ref={iframeRef}
             style={styles.iframe}
             title="Lab Report"
-            sandbox="allow-same-origin"
+            sandbox="allow-same-origin allow-scripts allow-modals"
           />
         </div>
       )}
@@ -331,20 +330,5 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-/**
- * Add CSS animation for spinner
- */
-const styleSheet = document.createElement('style');
-styleSheet.textContent = `
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
-`;
-if (typeof document !== 'undefined') {
-  document.head.appendChild(styleSheet);
-}
+// Spinner animation is injected via a <style> tag inside the component render
+// to avoid SSR crashes from direct document.createElement calls.

@@ -10,10 +10,13 @@ import { useAutoSave } from '@/hooks/useAutoSave';
 import { getLocalDB } from '@/lib/local-db';
 
 interface SelectedTest {
-  testTypeId: string;
+  testTypeId: string | null;  // null for custom tests
   sampleType: SampleType;
   price: number;
   templateInfo?: { name: string; fieldCount: number };
+  // Custom test fields (only set when testTypeId is null)
+  customName?: string;
+  isCustom?: boolean;
 }
 
 interface TestWithTemplate {
@@ -67,6 +70,11 @@ export default function NewVisitPage() {
   const [testTypes, setTestTypes] = useState<TestType[]>([]);
   const [selectedTests, setSelectedTests] = useState<SelectedTest[]>([]);
   const [testsLoading, setTestsLoading] = useState(true);
+
+  // ── Custom test entry ────────────────────────────────────────────────────
+  const [customTestName, setCustomTestName] = useState('');
+  const [customTestPrice, setCustomTestPrice] = useState('');
+  const [showCustomTestForm, setShowCustomTestForm] = useState(false);
 
   // ── Form state ────────────────────────────────────────────────────────────
   const [priority, setPriority] = useState('routine');
@@ -276,7 +284,7 @@ export default function NewVisitPage() {
   const handleAddTest = (testTypeId: string) => {
     const testType = testTypes.find(t => t.id === testTypeId);
     const testWithTemplate = testsWithTemplates.find(t => t.test.id === testTypeId);
-    if (!testType || selectedTests.some(t => t.testTypeId === testTypeId)) return;
+    if (!testType || selectedTests.some(t => !t.isCustom && t.testTypeId === testTypeId)) return;
 
     const fieldCount = testWithTemplate?.fields?.length || 0;
     const updated: SelectedTest[] = [
@@ -294,8 +302,34 @@ export default function NewVisitPage() {
     autoSave.save({ selectedPatient, selectedTests: updated, clinicalNotes, priority, savedAt: Date.now() });
   };
 
-  const handleRemoveTest = (testTypeId: string) => {
-    const updated = selectedTests.filter(t => t.testTypeId !== testTypeId);
+  const handleAddCustomTest = () => {
+    const name = customTestName.trim();
+    if (!name) return;
+    // Prevent duplicate custom test names
+    if (selectedTests.some(t => t.isCustom && t.customName?.toLowerCase() === name.toLowerCase())) return;
+    const price = parseFloat(customTestPrice) || 0;
+    const updated: SelectedTest[] = [
+      ...selectedTests,
+      {
+        testTypeId: null,
+        sampleType: SampleType.BLOOD,
+        price,
+        isCustom: true,
+        customName: name,
+      },
+    ];
+    setSelectedTests(updated);
+    setCustomTestName('');
+    setCustomTestPrice('');
+    setShowCustomTestForm(false);
+    autoSave.save({ selectedPatient, selectedTests: updated, clinicalNotes, priority, savedAt: Date.now() });
+  };
+
+  const handleRemoveTest = (key: string) => {
+    const updated = selectedTests.filter(t => {
+      const testKey = t.isCustom ? `custom:${t.customName}` : t.testTypeId;
+      return testKey !== key;
+    });
     setSelectedTests(updated);
     autoSave.save({ selectedPatient, selectedTests: updated, clinicalNotes, priority, savedAt: Date.now() });
   };
@@ -339,8 +373,12 @@ export default function NewVisitPage() {
       const [testsResult, samplesResult, paymentResult, timestampResult] = await Promise.all([
         supabase.from('visit_tests').insert(
           selectedTests.map(t => ({
-            visit_id: visitData.id, test_type_id: t.testTypeId,
-            status: 'pending', assigned_to: null,
+            visit_id: visitData.id,
+            test_type_id: t.isCustom ? null : t.testTypeId,
+            custom_name: t.isCustom ? t.customName : null,
+            custom_price: t.isCustom ? t.price : null,
+            status: 'pending',
+            assigned_to: null,
           }))
         ),
         supabase.from('samples').insert(
@@ -514,17 +552,89 @@ export default function NewVisitPage() {
             </div>
           )}
 
+          {/* Add Custom Test */}
+          <div className="mt-4 border-t border-gray-100 pt-4">
+            {!showCustomTestForm ? (
+              <button
+                type="button"
+                onClick={() => setShowCustomTestForm(true)}
+                className="text-sm text-green-700 hover:text-green-800 font-medium flex items-center gap-1"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Can't find a test? Add unlisted / custom test
+              </button>
+            ) : (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-3">
+                <p className="text-sm font-medium text-yellow-800">Add a custom or unlisted test</p>
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Test Name *</label>
+                    <input
+                      type="text"
+                      value={customTestName}
+                      onChange={e => setCustomTestName(e.target.value)}
+                      placeholder="e.g. Thyroid Panel, G6PD, HbA1c…"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-600"
+                      onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), handleAddCustomTest())}
+                    />
+                  </div>
+                  <div className="w-32">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Price (GHS)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={customTestPrice}
+                      onChange={e => setCustomTestPrice(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-600"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAddCustomTest}
+                    disabled={!customTestName.trim()}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white text-sm font-medium rounded-lg transition"
+                  >
+                    Add Test
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowCustomTestForm(false); setCustomTestName(''); setCustomTestPrice(''); }}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {selectedTests.length > 0 && (
-            <div>
+            <div className="mt-6">
               <h3 className="font-semibold text-gray-900 mb-3">Selected Tests</h3>
               <div className="space-y-2">
                 {selectedTests.map(test => {
                   const testType = testTypes.find(t => t.id === test.testTypeId);
+                  const testKey = test.isCustom ? `custom:${test.customName}` : test.testTypeId!;
+                  const displayName = test.isCustom ? test.customName : testType?.name;
+                  const displayCategory = test.isCustom ? 'Custom test' : testType?.category;
                   return (
-                    <div key={test.testTypeId} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div key={testKey} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                       <div>
-                        <p className="font-medium text-gray-900">{testType?.name}</p>
-                        <p className="text-sm text-gray-600">{testType?.category}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-gray-900">{displayName}</p>
+                          {test.isCustom && (
+                            <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium">
+                              Custom
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-gray-600">{displayCategory}</p>
                         {test.templateInfo && test.templateInfo.fieldCount > 0 && (
                           <p className="text-xs text-green-700 font-medium mt-1">
                             {test.templateInfo.fieldCount} parameters will be tested
@@ -533,7 +643,7 @@ export default function NewVisitPage() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleRemoveTest(test.testTypeId)}
+                        onClick={() => handleRemoveTest(testKey)}
                         className="text-red-600 hover:text-red-700 font-medium text-sm"
                       >
                         Remove
