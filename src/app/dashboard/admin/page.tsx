@@ -81,24 +81,30 @@ export default function AdminPage() {
         setUsers(mapped);
       }
 
-      const { data: logsData } = await supabase
-        .from('audit_logs')
+      // Query the enriched view which joins profiles for actor name
+      const { data: logsData } = await (supabase as any)
+        .from('v_audit_log_enriched')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(100);
+        .limit(200);
 
       if (logsData) {
-        // Map snake_case to camelCase
+        // Map view columns to AuditLog interface
+        // actual columns: table_name, record_id, metadata (not resource_type/resource_id/changes)
         const mapped: AuditLog[] = (logsData as any[]).map(l => ({
           id: l.id,
           createdAt: l.created_at,
           userId: l.user_id,
           action: l.action,
-          resourceType: l.resource_type,
-          resourceId: l.resource_id,
-          changes: l.changes,
-          ipAddress: l.ip_address,
-          userAgent: l.user_agent,
+          resourceType: l.table_name   ?? '',
+          resourceId:   l.record_id    ?? null,
+          changes:      l.metadata     ?? null,
+          ipAddress:    l.ip_address   ?? null,
+          userAgent:    null,
+          // enriched fields (not in base interface but available in render)
+          actorName:    l.actor_name   ?? '[system]',
+          actorUsername: l.actor_username ?? null,
+          actorRole:    l.actor_role   ?? null,
         }));
         setAuditLogs(mapped);
       }
@@ -505,35 +511,63 @@ export default function AdminPage() {
               </svg>
             </div>
           ) : auditLogs.length === 0 ? (
-            <div className="p-12 text-center text-gray-600">
-              <p>No audit logs available</p>
+            <div className="p-12 text-center text-gray-500">
+              <svg className="w-10 h-10 mx-auto mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+              <p className="text-sm">No audit events recorded yet.</p>
+              <p className="text-xs mt-1 text-gray-400">Events are logged automatically when staff create or modify records.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">User</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">Action</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">Resource</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-gray-900">Timestamp</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Staff Member</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Action</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Table</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Record</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">When</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {auditLogs.map((log) => (
-                    <tr key={log.id} className="hover:bg-gray-50 transition">
-                      <td className="px-6 py-4 text-sm text-gray-900">{log.userId}</td>
-                      <td className="px-6 py-4 text-sm">
-                        <span className="inline-block px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 capitalize">
-                          {log.action}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-600">
-                        {log.resourceType} - {log.resourceId.substring(0, 8)}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-600">{formatDate(log.createdAt)}</td>
-                    </tr>
-                  ))}
+                <tbody className="divide-y divide-gray-100">
+                  {auditLogs.map((log) => {
+                    const enriched = log as any;
+                    const actionColors: Record<string, string> = {
+                      create:   'bg-green-100 text-green-800',
+                      update:   'bg-blue-100 text-blue-800',
+                      delete:   'bg-red-100 text-red-800',
+                      view:     'bg-gray-100 text-gray-700',
+                      download: 'bg-purple-100 text-purple-800',
+                    };
+                    const colorClass = actionColors[log.action] ?? 'bg-gray-100 text-gray-700';
+                    return (
+                      <tr key={log.id} className="hover:bg-gray-50 transition">
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-gray-900">
+                            {enriched.actorName ?? '[system]'}
+                          </p>
+                          {enriched.actorUsername && (
+                            <p className="text-xs text-gray-400 font-mono">@{enriched.actorUsername}</p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold capitalize ${colorClass}`}>
+                            {log.action}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-600 font-mono text-xs">
+                          {log.resourceType || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 font-mono text-xs">
+                          {log.resourceId ? String(log.resourceId).substring(0, 8) + '…' : '—'}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+                          {formatDate(log.createdAt)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

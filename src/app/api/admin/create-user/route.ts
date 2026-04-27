@@ -131,16 +131,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── 7. Log the admin action ─────────────────────────────────────────────
+    // ── 7. Log the admin action via SECURITY DEFINER server function ──────────
+    // Using logAdminActionServer because this is a server-side route; the
+    // service role client has no auth.uid() so we pass adminId explicitly.
     try {
-      await (supabaseServer as any).from('admin_activity_log').insert({
-        admin_id: callerUser.id,
-        action: 'CREATE_USER',
-        target_type: 'profiles',
-        target_id: newUserId,
-        details: { username: normalizedUsername, role, full_name: fullName?.trim() || null },
+      const { logAdminActionServer } = await import('@/lib/admin-logger');
+      await logAdminActionServer(callerUser.id, 'CREATE_USER', 'profiles', newUserId, {
+        username: normalizedUsername,
+        role,
+        full_name: fullName?.trim() || null,
       });
-    } catch { /* non-fatal — don't block the response */ }
+    } catch { /* non-fatal */ }
 
     return NextResponse.json({
       success: true,

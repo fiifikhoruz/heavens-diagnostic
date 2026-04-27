@@ -195,15 +195,14 @@ export async function POST(request: NextRequest) {
     // ── 8. Build link and log ─────────────────────────────────────────────────
     const inviteLink = `${SITE_URL}/set-password?token=${token}`;
 
+    // Use server-side logger (service role, explicit adminId) — not browser logger
     try {
-      await (supabaseServer as any).from('admin_activity_log').insert({
-        admin_id: caller.id,
-        action: 'INVITE_USER',
-        target_type: 'profiles',
-        target_id: userId,
-        details: { username: normalizedUsername, role },
+      const { logAdminActionServer } = await import('@/lib/admin-logger');
+      await logAdminActionServer(caller.id, 'INVITE_USER', 'profiles', userId, {
+        username: normalizedUsername,
+        role,
       });
-    } catch { /* non-fatal — don't block the invite */ }
+    } catch { /* non-fatal */ }
 
     return NextResponse.json({
       success: true,

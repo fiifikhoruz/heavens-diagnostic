@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { formatGHS } from '@/lib/currency';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -13,10 +13,7 @@ interface SelectedTest {
   testTypeId: string;
   sampleType: SampleType;
   price: number;
-  templateInfo?: {
-    name: string;
-    fieldCount: number;
-  };
+  templateInfo?: { name: string; fieldCount: number };
 }
 
 interface TestWithTemplate {
@@ -25,43 +22,61 @@ interface TestWithTemplate {
   fields?: TestTemplateField[];
 }
 
+function rowToPatient(p: any): Patient {
+  return {
+    id: p.id,
+    patientId: p.patient_id,
+    createdAt: p.created_at,
+    updatedAt: p.updated_at,
+    firstName: p.first_name,
+    lastName: p.last_name,
+    dateOfBirth: p.date_of_birth ?? '',
+    gender: p.gender ?? 'other',
+    phone: p.phone ?? null,
+    email: p.email ?? null,
+    address: p.address ?? null,
+    city: p.city ?? null,
+    state: p.state ?? null,
+    postalCode: p.postal_code ?? null,
+    insuranceProvider: p.insurance_provider ?? null,
+    insuranceId: p.insurance_id ?? null,
+    emergencyContactName: p.emergency_contact_name ?? null,
+    emergencyContactPhone: p.emergency_contact_phone ?? null,
+    notes: p.notes ?? null,
+    isActive: p.is_active,
+  };
+}
+
 export default function NewVisitPage() {
   const router = useRouter();
   const supabase = createClient();
 
-  const [patients, setPatients] = useState<Patient[]>([]);
-  const [testTypes, setTestTypes] = useState<TestType[]>([]);
-  const [testsWithTemplates, setTestsWithTemplates] = useState<TestWithTemplate[]>([]);
-  const [filteredPatients, setFilteredPatients] = useState<Patient[]>([]);
-  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
-  const [selectedTests, setSelectedTests] = useState<SelectedTest[]>([]);
+  // ── Auth ─────────────────────────────────────────────────────────────────
+  const [userId, setUserId] = useState<string | null>(null);
+
+  // ── Patient search (on-demand, server-side) ───────────────────────────────
   const [searchPatient, setSearchPatient] = useState('');
+  const [patientResults, setPatientResults] = useState<Patient[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
+  const [unsyncedPatientIds, setUnsyncedPatientIds] = useState<Set<string>>(new Set());
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Tests (single query, no N+1) ─────────────────────────────────────────
+  const [testsWithTemplates, setTestsWithTemplates] = useState<TestWithTemplate[]>([]);
+  const [testTypes, setTestTypes] = useState<TestType[]>([]);
+  const [selectedTests, setSelectedTests] = useState<SelectedTest[]>([]);
+  const [testsLoading, setTestsLoading] = useState(true);
+
+  // ── Form state ────────────────────────────────────────────────────────────
   const [priority, setPriority] = useState('routine');
   const [clinicalNotes, setClinicalNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [userId, setUserId] = useState<string | null>(null);
   const [showRestoreDraft, setShowRestoreDraft] = useState(false);
-  const [draftTimestamp, setDraftTimestamp] = useState<string>('');
-  const [unsyncedPatientIds, setUnsyncedPatientIds] = useState<Set<string>>(new Set());
+  const [draftTimestamp, setDraftTimestamp] = useState('');
 
-  // Get user ID for auto-save
-  useEffect(() => {
-    const getUser = async () => {
-      try {
-        const { data: authData } = await supabase.auth.getUser();
-        if (authData.user) {
-          setUserId(authData.user.id);
-        }
-      } catch (err) {
-        console.error('Error getting user:', err);
-      }
-    };
-    getUser();
-  }, [supabase]);
-
-  // Initialize auto-save hook
+  // ── Auto-save ─────────────────────────────────────────────────────────────
   const autoSave = useAutoSave({
     key: 'new-visit',
     userId: userId || '',
@@ -69,111 +84,41 @@ export default function NewVisitPage() {
     enabled: !!userId,
   });
 
-  // Check for draft on mount and restore if available
+  // 1. Get user ID from cached session (no server round-trip)
   useEffect(() => {
-    const checkDraft = async () => {
-      if (userId && autoSave.hasDraft) {
-        const draft = await autoSave.restore();
-        if (draft) {
-          setSelectedPatient(draft.selectedPatient || null);
-          setSelectedTests(draft.selectedTests || []);
-          setClinicalNotes(draft.clinicalNotes || '');
-          setPriority(draft.priority || 'routine');
-          if (draft.savedAt) {
-            const date = new Date(draft.savedAt);
-            const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-            setDraftTimestamp(timeStr);
-          }
-          setShowRestoreDraft(true);
-        }
-      }
-    };
-    checkDraft();
-  }, [userId, autoSave.hasDraft]);
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user.id) setUserId(data.session.user.id);
+    });
+  }, []);
 
+  // 2. Load all test types + templates + fields in ONE query (replaces N+1 loop)
   useEffect(() => {
-    const fetchData = async () => {
+    const loadTests = async () => {
       try {
-        // Fetch patients from Supabase
-        const { data: patientsData } = await supabase
-          .from('patients')
-          .select('*')
-          .eq('is_active', true);
-
-        const syncedIds = new Set<string>();
-        const mapped: Patient[] = (patientsData ?? []).map((p: any) => {
-          syncedIds.add(p.id);
-          return {
-            id: p.id,
-            patientId: p.patient_id,
-            createdAt: p.created_at,
-            updatedAt: p.updated_at,
-            firstName: p.first_name,
-            lastName: p.last_name,
-            dateOfBirth: p.date_of_birth,
-            gender: p.gender,
-            phone: p.phone,
-            email: p.email,
-            address: p.address,
-            city: p.city,
-            state: p.state,
-            postalCode: p.postal_code,
-            insuranceProvider: p.insurance_provider,
-            insuranceId: p.insurance_id,
-            emergencyContactName: p.emergency_contact_name,
-            emergencyContactPhone: p.emergency_contact_phone,
-            notes: p.notes,
-            isActive: p.is_active,
-          };
-        });
-
-        // Also surface patients saved offline that haven't synced yet
-        // They're shown in the list but blocked from visit creation until synced
-        try {
-          const db = getLocalDB();
-          const localPatients = await db.patients.where('synced').equals(0 as any).toArray();
-          const newUnsyncedIds = new Set<string>();
-          for (const lp of localPatients) {
-            if (!syncedIds.has(lp.id)) {
-              newUnsyncedIds.add(lp.id);
-              mapped.unshift({
-                id: lp.id,
-                patientId: lp.patientId,
-                createdAt: lp.createdAt,
-                updatedAt: lp.updatedAt,
-                firstName: lp.firstName,
-                lastName: lp.lastName,
-                dateOfBirth: lp.dateOfBirth,
-                gender: lp.gender as any,
-                phone: lp.phone,
-                email: lp.email,
-                address: lp.address,
-                city: lp.city,
-                state: lp.state,
-                postalCode: lp.postalCode,
-                insuranceProvider: lp.insuranceProvider ?? null,
-                insuranceId: lp.insuranceId ?? null,
-                emergencyContactName: lp.emergencyContactName,
-                emergencyContactPhone: lp.emergencyContactPhone,
-                notes: null,
-                isActive: true,
-              });
-            }
-          }
-          setUnsyncedPatientIds(newUnsyncedIds);
-        } catch { /* IndexedDB unavailable — skip local patients */ }
-
-        setPatients(mapped);
-        setFilteredPatients(mapped);
-
-        // Fetch test types
-        const { data: testsData } = await supabase
+        const { data } = await (supabase as any)
           .from('test_types')
-          .select('*')
-          .eq('is_active', true);
+          .select(`
+            id, name, category, description,
+            turnaround_hours, price, is_sensitive, is_active,
+            test_templates (
+              id, name, test_type_id, created_at,
+              test_template_fields (
+                id, template_id, field_name, unit,
+                normal_min, normal_max, display_order, created_at
+              )
+            )
+          `)
+          .eq('is_active', true)
+          .order('category')
+          .order('name');
 
-        if (testsData) {
-          const mapped: TestType[] = (testsData as any[]).map(t => ({
+        if (!data) return;
+
+        const types: TestType[] = [];
+        const withTemplates: TestWithTemplate[] = [];
+
+        for (const t of data as any[]) {
+          const test: TestType = {
             id: t.id,
             name: t.name,
             category: t.category,
@@ -182,136 +127,180 @@ export default function NewVisitPage() {
             price: t.price,
             isSensitive: t.is_sensitive,
             isActive: t.is_active,
-          }));
-          setTestTypes(mapped);
+          };
+          types.push(test);
 
-          // Fetch templates and fields for each test type
-          const testsWithTemplatesData: TestWithTemplate[] = [];
-          for (const test of mapped) {
-            const { data: templateData } = await supabase
-              .from('test_templates')
-              .select('*')
-              .eq('test_type_id', test.id)
-              .single();
-
-            if (templateData) {
-              const { data: fieldsData } = await supabase
-                .from('test_template_fields')
-                .select('*')
-                .eq('template_id', templateData.id)
-                .order('display_order', { ascending: true });
-
-              testsWithTemplatesData.push({
-                test,
-                template: {
-                  id: templateData.id,
-                  testTypeId: templateData.test_type_id,
-                  name: templateData.name,
-                  createdAt: templateData.created_at,
-                },
-                fields: fieldsData ? (fieldsData as any[]).map(f => ({
-                  id: f.id,
-                  templateId: f.template_id,
-                  fieldName: f.field_name,
-                  unit: f.unit,
-                  normalMin: f.normal_min,
-                  normalMax: f.normal_max,
-                  displayOrder: f.display_order,
-                  createdAt: f.created_at,
-                })) as TestTemplateField[] : [],
-              });
-            } else {
-              testsWithTemplatesData.push({
-                test,
-              });
-            }
+          const tpl = t.test_templates?.[0];
+          if (tpl) {
+            const fields: TestTemplateField[] = (tpl.test_template_fields ?? [])
+              .sort((a: any, b: any) => a.display_order - b.display_order)
+              .map((f: any): TestTemplateField => ({
+                id: f.id,
+                templateId: f.template_id,
+                fieldName: f.field_name,
+                unit: f.unit,
+                normalMin: f.normal_min,
+                normalMax: f.normal_max,
+                displayOrder: f.display_order,
+                createdAt: f.created_at,
+              }));
+            withTemplates.push({
+              test,
+              template: {
+                id: tpl.id,
+                testTypeId: tpl.test_type_id,
+                name: tpl.name,
+                createdAt: tpl.created_at,
+              },
+              fields,
+            });
+          } else {
+            withTemplates.push({ test });
           }
-          setTestsWithTemplates(testsWithTemplatesData);
         }
+
+        setTestTypes(types);
+        setTestsWithTemplates(withTemplates);
       } catch (err) {
-        console.error('Error fetching data:', err);
-        setError('Failed to load form data');
+        console.error('[new-visit] tests load:', err);
       } finally {
-        setIsLoading(false);
+        setTestsLoading(false);
       }
     };
 
-    fetchData();
+    loadTests();
+  }, []);
+
+  // 3. Restore draft once userId is ready
+  useEffect(() => {
+    if (!userId || !autoSave.hasDraft) return;
+    autoSave.restore().then(draft => {
+      if (!draft) return;
+      if (draft.selectedPatient) {
+        setSelectedPatient(draft.selectedPatient);
+        setSearchPatient(`${draft.selectedPatient.firstName} ${draft.selectedPatient.lastName}`);
+      }
+      setSelectedTests(draft.selectedTests || []);
+      setClinicalNotes(draft.clinicalNotes || '');
+      setPriority(draft.priority || 'routine');
+      if (draft.savedAt) {
+        setDraftTimestamp(
+          new Date(draft.savedAt).toLocaleTimeString('en-US', {
+            hour: '2-digit', minute: '2-digit', hour12: true,
+          })
+        );
+      }
+      setShowRestoreDraft(true);
+    });
+  }, [userId]);
+
+  // 4. Server-side patient search — only fires when user types, max 8 results
+  const searchPatients = useCallback(async (query: string) => {
+    const q = query.trim();
+    if (q.length < 2) { setPatientResults([]); return; }
+
+    setIsSearching(true);
+    try {
+      const { data: serverData } = await supabase
+        .from('patients')
+        .select('*')
+        .eq('is_active', true)
+        .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,phone.ilike.%${q}%`)
+        .order('last_name')
+        .limit(8);
+
+      const serverIds = new Set<string>();
+      const results: Patient[] = (serverData ?? []).map((p: any) => {
+        serverIds.add(p.id);
+        return rowToPatient(p);
+      });
+
+      // Merge in unsynced local patients matching the query
+      try {
+        const db = getLocalDB();
+        const localPatients = await db.patients.where('synced').equals(0 as any).toArray();
+        const newUnsyncedIds = new Set<string>();
+        const ql = q.toLowerCase();
+        for (const lp of localPatients) {
+          if (serverIds.has(lp.id)) continue;
+          const fullName = `${lp.firstName} ${lp.lastName}`.toLowerCase();
+          if (!fullName.includes(ql) && !(lp.phone ?? '').includes(q)) continue;
+          newUnsyncedIds.add(lp.id);
+          results.unshift({
+            id: lp.id, patientId: lp.patientId,
+            createdAt: lp.createdAt, updatedAt: lp.updatedAt,
+            firstName: lp.firstName, lastName: lp.lastName,
+            dateOfBirth: lp.dateOfBirth, gender: lp.gender as any,
+            phone: lp.phone, email: lp.email,
+            address: lp.address, city: lp.city,
+            state: lp.state, postalCode: lp.postalCode,
+            insuranceProvider: lp.insuranceProvider ?? null,
+            insuranceId: lp.insuranceId ?? null,
+            emergencyContactName: lp.emergencyContactName,
+            emergencyContactPhone: lp.emergencyContactPhone,
+            notes: null, isActive: true,
+          });
+        }
+        setUnsyncedPatientIds(prev => {
+          const next = new Set(prev);
+          newUnsyncedIds.forEach(id => next.add(id));
+          return next;
+        });
+      } catch { /* IndexedDB unavailable */ }
+
+      setPatientResults(results);
+    } catch (err) {
+      console.error('[new-visit] patient search:', err);
+    } finally {
+      setIsSearching(false);
+    }
   }, [supabase]);
 
   const handlePatientSearch = (value: string) => {
     setSearchPatient(value);
-    if (value.trim()) {
-      const filtered = patients.filter(p =>
-        `${p.firstName} ${p.lastName}`.toLowerCase().includes(value.toLowerCase()) ||
-        p.phone?.includes(value)
-      );
-      setFilteredPatients(filtered);
-    } else {
-      setFilteredPatients(patients);
+    if (selectedPatient && value !== `${selectedPatient.firstName} ${selectedPatient.lastName}`) {
+      setSelectedPatient(null);
     }
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!value.trim()) { setPatientResults([]); return; }
+    searchTimer.current = setTimeout(() => searchPatients(value), 300);
   };
 
   const handleSelectPatient = (patient: Patient) => {
     setSelectedPatient(patient);
     setSearchPatient(`${patient.firstName} ${patient.lastName}`);
-    setFilteredPatients([]);
-    // Auto-save
-    autoSave.save({
-      selectedPatient: patient,
-      selectedTests,
-      clinicalNotes,
-      priority,
-      savedAt: Date.now(),
-    });
+    setPatientResults([]);
+    autoSave.save({ selectedPatient: patient, selectedTests, clinicalNotes, priority, savedAt: Date.now() });
   };
 
   const handleAddTest = (testTypeId: string) => {
     const testType = testTypes.find(t => t.id === testTypeId);
     const testWithTemplate = testsWithTemplates.find(t => t.test.id === testTypeId);
+    if (!testType || selectedTests.some(t => t.testTypeId === testTypeId)) return;
 
-    if (testType && !selectedTests.find(t => t.testTypeId === testTypeId)) {
-      const fieldCount = testWithTemplate?.fields?.length || 0;
-      const updatedTests = [
-        ...selectedTests,
-        {
-          testTypeId,
-          sampleType: SampleType.BLOOD,
-          price: 0,
-          templateInfo: testWithTemplate?.template ? {
-            name: testWithTemplate.template.name,
-            fieldCount,
-          } : undefined,
-        },
-      ];
-      setSelectedTests(updatedTests);
-      // Auto-save
-      autoSave.save({
-        selectedPatient,
-        selectedTests: updatedTests,
-        clinicalNotes,
-        priority,
-        savedAt: Date.now(),
-      });
-    }
+    const fieldCount = testWithTemplate?.fields?.length || 0;
+    const updated: SelectedTest[] = [
+      ...selectedTests,
+      {
+        testTypeId,
+        sampleType: SampleType.BLOOD,
+        price: testType.price ?? 0,
+        templateInfo: testWithTemplate?.template
+          ? { name: testWithTemplate.template.name, fieldCount }
+          : undefined,
+      },
+    ];
+    setSelectedTests(updated);
+    autoSave.save({ selectedPatient, selectedTests: updated, clinicalNotes, priority, savedAt: Date.now() });
   };
 
   const handleRemoveTest = (testTypeId: string) => {
-    const updatedTests = selectedTests.filter(t => t.testTypeId !== testTypeId);
-    setSelectedTests(updatedTests);
-    // Auto-save
-    autoSave.save({
-      selectedPatient,
-      selectedTests: updatedTests,
-      clinicalNotes,
-      priority,
-      savedAt: Date.now(),
-    });
+    const updated = selectedTests.filter(t => t.testTypeId !== testTypeId);
+    setSelectedTests(updated);
+    autoSave.save({ selectedPatient, selectedTests: updated, clinicalNotes, priority, savedAt: Date.now() });
   };
 
-  const calculateTotal = () => {
-    return selectedTests.reduce((sum, test) => sum + test.price, 0);
-  };
+  const calculateTotal = () => selectedTests.reduce((sum, t) => sum + t.price, 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -319,34 +308,19 @@ export default function NewVisitPage() {
     setError('');
 
     try {
-      if (!selectedPatient) {
-        setError('Please select a patient');
-        return;
-      }
-
-      if (selectedTests.length === 0) {
-        setError('Please select at least one test');
-        return;
-      }
-
-      // Block visit creation for patients still pending sync to server
+      if (!selectedPatient) { setError('Please select a patient'); return; }
+      if (selectedTests.length === 0) { setError('Please select at least one test'); return; }
       if (unsyncedPatientIds.has(selectedPatient.id)) {
         setError(
           `${selectedPatient.firstName} ${selectedPatient.lastName} was registered offline and hasn't synced yet. ` +
-          'Please wait for sync to complete (check the sync badge in the toolbar), then try again.'
+          'Please wait for sync to complete, then try again.'
         );
-        setIsSubmitting(false);
         return;
       }
 
-      // Get current user
       const { data: authData } = await supabase.auth.getSession();
-      if (!authData.session) {
-        setError('You must be logged in');
-        return;
-      }
+      if (!authData.session) { setError('You must be logged in'); return; }
 
-      // Create visit
       const visitDate = new Date().toISOString();
       const { data: visitData, error: visitError } = await supabase
         .from('visits')
@@ -359,93 +333,46 @@ export default function NewVisitPage() {
         .select()
         .single();
 
-      if (visitError || !visitData) {
-        setError('Failed to create visit');
-        return;
+      if (visitError || !visitData) { setError('Failed to create visit'); return; }
+
+      // All post-visit inserts run in parallel
+      const [testsResult, samplesResult, paymentResult, timestampResult] = await Promise.all([
+        supabase.from('visit_tests').insert(
+          selectedTests.map(t => ({
+            visit_id: visitData.id, test_type_id: t.testTypeId,
+            status: 'pending', assigned_to: null,
+          }))
+        ),
+        supabase.from('samples').insert(
+          selectedTests.map(t => ({
+            visit_id: visitData.id, sample_type: t.sampleType, status: 'pending',
+          }))
+        ),
+        supabase.from('payments').insert({
+          visit_id: visitData.id, amount: calculateTotal(),
+          status: 'unpaid', received_by: authData.session.user.id,
+        }),
+        supabase.from('visit_timestamps').insert({
+          visit_id: visitData.id, created_at: visitDate,
+        }),
+      ]);
+
+      if (testsResult.error) console.error('[new-visit] visit_tests:', testsResult.error);
+      if (samplesResult.error) console.error('[new-visit] samples:', samplesResult.error);
+      if (timestampResult.error) console.error('[new-visit] timestamps:', timestampResult.error);
+      if (paymentResult.error) {
+        setError(`Visit created but payment record failed: ${paymentResult.error.message}. Please record payment manually.`);
       }
 
-      // Create visit tests
-      const testInserts = selectedTests.map(test => ({
-        visit_id: visitData.id,
-        test_type_id: test.testTypeId,
-        status: 'pending',
-        assigned_to: null,
-      }));
-
-      const { error: testsError } = await supabase
-        .from('visit_tests')
-        .insert(testInserts);
-
-      if (testsError) {
-        console.error('Failed to create tests:', testsError);
-      }
-
-      // Create samples
-      const sampleInserts = selectedTests.map(test => ({
-        visit_id: visitData.id,
-        sample_type: test.sampleType,
-        status: 'pending',
-      }));
-
-      const { error: samplesError } = await supabase
-        .from('samples')
-        .insert(sampleInserts);
-
-      if (samplesError) {
-        console.error('Failed to create samples:', samplesError);
-      }
-
-      // Create payment record (unpaid)
-      const { error: paymentError } = await supabase
-        .from('payments')
-        .insert({
-          visit_id: visitData.id,
-          amount: calculateTotal(),
-          status: 'unpaid',
-          received_by: authData.session.user.id,
-        });
-
-      if (paymentError) {
-        // Non-fatal but surface it — visit is created, payment tracking failed
-        setError(`Visit created but payment record failed: ${paymentError.message}. Please record payment manually.`);
-      }
-
-      // Create timestamp for visit creation
-      const { error: timestampError } = await supabase
-        .from('visit_timestamps')
-        .insert({
-          visit_id: visitData.id,
-          created_at: visitDate,
-        });
-
-      if (timestampError) {
-        console.error('Failed to create timestamp:', timestampError);
-        // Non-fatal — turnaround tracking may be incomplete but visit proceeds
-      }
-
-      // Clear draft after successful creation
       await autoSave.discard();
-
-      // Redirect to visit detail
       router.push(`/dashboard/visits/${visitData.id}`);
     } catch (err) {
-      console.error('Error creating visit:', err);
+      console.error('[new-visit] submit:', err);
       setError('An error occurred while creating the visit');
     } finally {
       setIsSubmitting(false);
     }
   };
-
-  if (isLoading) {
-    return (
-      <div className="p-6 flex items-center justify-center min-h-screen">
-        <svg className="animate-spin h-12 w-12 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-      </div>
-    );
-  }
 
   return (
     <div className="p-6 space-y-6">
@@ -473,6 +400,7 @@ export default function NewVisitPage() {
               autoSave.discard();
               setShowRestoreDraft(false);
               setSelectedPatient(null);
+              setSearchPatient('');
               setSelectedTests([]);
               setClinicalNotes('');
               setPriority('routine');
@@ -485,33 +413,38 @@ export default function NewVisitPage() {
       )}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-          {error}
-        </div>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
       )}
 
       <form onSubmit={handleSubmit} className="max-w-4xl space-y-6">
-        {/* Patient Selection */}
+
+        {/* Patient Selection — renders immediately, search fires on demand */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Select Patient</h2>
           <div className="relative">
             <input
               type="text"
-              placeholder="Search by name or phone..."
+              placeholder="Type name or phone to search…"
               value={searchPatient}
-              onChange={(e) => handlePatientSearch(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-600"
+              onChange={e => handlePatientSearch(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-600 pr-10"
             />
-            {filteredPatients.length > 0 && searchPatient && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg z-10">
-                {filteredPatients.map(patient => {
+            {isSearching && (
+              <svg className="absolute right-3 top-2.5 h-5 w-5 animate-spin text-gray-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            )}
+            {patientResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg z-10 max-h-64 overflow-y-auto">
+                {patientResults.map(patient => {
                   const isPending = unsyncedPatientIds.has(patient.id);
                   return (
                     <button
                       key={patient.id}
                       type="button"
                       onClick={() => handleSelectPatient(patient)}
-                      className={`w-full text-left px-4 py-2 hover:bg-green-50 border-b last:border-b-0 ${isPending ? 'opacity-75' : ''}`}
+                      className={`w-full text-left px-4 py-2.5 hover:bg-green-50 border-b last:border-b-0 ${isPending ? 'opacity-75' : ''}`}
                     >
                       <div className="flex items-center gap-2">
                         <p className="font-medium text-gray-900">{patient.firstName} {patient.lastName}</p>
@@ -521,7 +454,7 @@ export default function NewVisitPage() {
                           </span>
                         )}
                       </div>
-                      <p className="text-sm text-gray-600">{patient.phone || 'No phone'}</p>
+                      <p className="text-sm text-gray-500">{patient.phone || 'No phone'} · {patient.patientId}</p>
                     </button>
                   );
                 })}
@@ -533,46 +466,53 @@ export default function NewVisitPage() {
               <p className="font-medium text-green-900">
                 Selected: {selectedPatient.firstName} {selectedPatient.lastName}
               </p>
-              <p className="text-sm text-green-700 mt-1">ID: {selectedPatient.patientId}</p>
+              <p className="text-sm text-green-700 mt-0.5">ID: {selectedPatient.patientId}</p>
             </div>
           )}
         </div>
 
-        {/* Test Selection */}
+        {/* Test Selection — shows inline skeleton while loading */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Select Tests</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            {testsWithTemplates.map(testWithTemplate => {
-              const test = testWithTemplate.test;
-              const isSelected = selectedTests.some(t => t.testTypeId === test.id);
-              const fieldCount = testWithTemplate.fields?.length || 0;
 
-              return (
-                <button
-                  key={test.id}
-                  type="button"
-                  onClick={() => handleAddTest(test.id)}
-                  disabled={isSelected}
-                  className={`p-4 border rounded-lg text-left transition ${
-                    isSelected
-                      ? 'bg-green-50 border-green-600'
-                      : 'border-gray-300 hover:border-green-600'
-                  } disabled:opacity-50`}
-                >
-                  <p className="font-medium text-gray-900">{test.name}</p>
-                  <p className="text-sm text-gray-600">{test.category}</p>
-                  <p className="text-xs text-gray-500 mt-1">GHS {test.price?.toFixed(2)}</p>
-                  {testWithTemplate.template && fieldCount > 0 && (
-                    <div className="mt-2 pt-2 border-t border-gray-200">
-                      <p className="text-xs font-medium text-green-700">
-                        {fieldCount} parameter{fieldCount !== 1 ? 's' : ''}
-                      </p>
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          {testsLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {[1, 2, 3, 4].map(i => (
+                <div key={i} className="h-20 bg-gray-100 rounded-lg animate-pulse" />
+              ))}
+            </div>
+          ) : testsWithTemplates.length === 0 ? (
+            <p className="text-gray-400 text-sm text-center py-8">No test types configured yet.</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              {testsWithTemplates.map(({ test, template, fields }) => {
+                const isSelected = selectedTests.some(t => t.testTypeId === test.id);
+                const fieldCount = fields?.length || 0;
+                return (
+                  <button
+                    key={test.id}
+                    type="button"
+                    onClick={() => handleAddTest(test.id)}
+                    disabled={isSelected}
+                    className={`p-4 border rounded-lg text-left transition ${
+                      isSelected ? 'bg-green-50 border-green-600' : 'border-gray-300 hover:border-green-600'
+                    } disabled:opacity-50`}
+                  >
+                    <p className="font-medium text-gray-900">{test.name}</p>
+                    <p className="text-sm text-gray-600">{test.category}</p>
+                    <p className="text-xs text-gray-500 mt-1">GHS {(test.price ?? 0).toFixed(2)}</p>
+                    {template && fieldCount > 0 && (
+                      <div className="mt-2 pt-2 border-t border-gray-200">
+                        <p className="text-xs font-medium text-green-700">
+                          {fieldCount} parameter{fieldCount !== 1 ? 's' : ''}
+                        </p>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {selectedTests.length > 0 && (
             <div>
@@ -611,17 +551,10 @@ export default function NewVisitPage() {
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Priority</h2>
           <select
             value={priority}
-            onChange={(e) => {
-              const newPriority = e.target.value;
-              setPriority(newPriority);
-              // Auto-save
-              autoSave.save({
-                selectedPatient,
-                selectedTests,
-                clinicalNotes,
-                priority: newPriority,
-                savedAt: Date.now(),
-              });
+            onChange={e => {
+              const v = e.target.value;
+              setPriority(v);
+              autoSave.save({ selectedPatient, selectedTests, clinicalNotes, priority: v, savedAt: Date.now() });
             }}
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-600"
           >
@@ -635,17 +568,10 @@ export default function NewVisitPage() {
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Clinical Notes</h2>
           <textarea
             value={clinicalNotes}
-            onChange={(e) => {
-              const newNotes = e.target.value;
-              setClinicalNotes(newNotes);
-              // Auto-save
-              autoSave.save({
-                selectedPatient,
-                selectedTests,
-                clinicalNotes: newNotes,
-                priority,
-                savedAt: Date.now(),
-              });
+            onChange={e => {
+              const v = e.target.value;
+              setClinicalNotes(v);
+              autoSave.save({ selectedPatient, selectedTests, clinicalNotes: v, priority, savedAt: Date.now() });
             }}
             rows={4}
             placeholder="Add clinical notes for this visit..."
@@ -670,7 +596,7 @@ export default function NewVisitPage() {
             <div className="flex justify-between">
               <span className="text-gray-600">Total Parameters:</span>
               <span className="font-medium text-gray-900">
-                {selectedTests.reduce((sum, test) => sum + (test.templateInfo?.fieldCount || 0), 0)}
+                {selectedTests.reduce((sum, t) => sum + (t.templateInfo?.fieldCount || 0), 0)}
               </span>
             </div>
             <div className="flex justify-between">
